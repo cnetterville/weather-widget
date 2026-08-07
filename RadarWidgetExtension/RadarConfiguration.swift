@@ -11,6 +11,7 @@ import WidgetKit
 enum RadarZoomLevel: String, AppEnum {
     case city
     case metro
+    case wide
     case regional
     case state
 
@@ -22,6 +23,7 @@ enum RadarZoomLevel: String, AppEnum {
         [
             .city: "City (~25 mi)",
             .metro: "Metro (~60 mi)",
+            .wide: "Wide (~120 mi)",
             .regional: "Regional (~150 mi)",
             .state: "State (~350 mi)",
         ]
@@ -32,9 +34,31 @@ enum RadarZoomLevel: String, AppEnum {
         switch self {
         case .city: 0.35
         case .metro: 0.9
+        case .wide: 1.75
         case .regional: 2.2
         case .state: 5.0
         }
+    }
+}
+
+/// The Apple Maps rendering style used for the base map under the radar.
+enum RadarMapStyle: String, AppEnum {
+    case muted
+    case standard
+    case satellite
+    case hybrid
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        "Map Style"
+    }
+
+    static var caseDisplayRepresentations: [RadarMapStyle: DisplayRepresentation] {
+        [
+            .muted: "Muted (radar stands out)",
+            .standard: "Standard",
+            .satellite: "Satellite",
+            .hybrid: "Hybrid (satellite + labels)",
+        ]
     }
 }
 
@@ -45,9 +69,15 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
         IntentDescription("Choose the area shown on the radar map.")
     }
 
+    @Parameter(title: "Use My Current Location", default: false)
+    var useCurrentLocation: Bool
+
     @Parameter(title: "Location", default: "New York, NY")
     var location: String
 
     @Parameter(title: "Zoom", default: .regional)
     var zoom: RadarZoomLevel
+
+    @Parameter(title: "Map Style", default: .muted)
+    var mapStyle: RadarMapStyle
 }

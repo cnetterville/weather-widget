@@ -11,32 +11,58 @@ import MapKit
 enum RadarRenderError: Error {
     case emptyLocation
     case locationNotFound
+    case currentLocationUnavailable
 }
 
 /// Captures an Apple Maps snapshot of an area and composites the latest
 /// NEXRAD precipitation radar tiles from the Iowa Environmental Mesonet
 /// on top of it. Radar coverage is US-only; elsewhere the tiles are empty
 /// and the widget shows the plain map.
+extension RadarMapStyle {
+    /// The MapKit configuration for this style. Standard and hybrid styles
+    /// exclude points of interest so pins don't clutter the weather map.
+    var mapConfiguration: MKMapConfiguration {
+        switch self {
+        case .muted:
+            let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
+            configuration.pointOfInterestFilter = .excludingAll
+            return configuration
+        case .standard:
+            let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .default)
+            configuration.pointOfInterestFilter = .excludingAll
+            return configuration
+        case .satellite:
+            return MKImageryMapConfiguration(elevationStyle: .flat)
+        case .hybrid:
+            let configuration = MKHybridMapConfiguration(elevationStyle: .flat)
+            configuration.pointOfInterestFilter = .excludingAll
+            return configuration
+        }
+    }
+}
+
 struct RadarMapRenderer {
     let coordinate: CLLocationCoordinate2D
     let latitudeSpan: Double
+    let mapStyle: RadarMapStyle
     let size: CGSize
 
     private static let radarTileAlpha: CGFloat = 0.7
     private static let maximumTileCount = 48
     private static let tileZoomRange = 2...12
+    // In image pixels; the image renders at 2x the widget's point size.
+    private static let locationDotRadius: CGFloat = 7
+    private static let locationDotRingWidth: CGFloat = 3
 
     func render() async throws -> (image: NSImage, radarTime: Date?) {
         let snapshot = try await takeSnapshot()
         let zoom = tileZoom()
+        // Radar being briefly unreachable shouldn't blank the widget; with no
+        // tiles, draw(_:_:_:) still produces the map with the location dot.
         let tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom)
-        guard !tiles.isEmpty else {
-            // Radar being briefly unreachable shouldn't blank the widget;
-            // fall back to the plain map.
-            return (snapshot.image, nil)
-        }
         let composited = draw(tiles: tiles, zoom: zoom, over: snapshot)
-        return (composited, await Self.radarTimestamp())
+        let radarTime = tiles.isEmpty ? nil : await Self.radarTimestamp()
+        return (composited, radarTime)
     }
 
     // MARK: - Map snapshot
@@ -54,13 +80,10 @@ struct RadarMapRenderer {
     }
 
     private func takeSnapshot() async throws -> MKMapSnapshotter.Snapshot {
-        let configuration = MKStandardMapConfiguration(elevationStyle: .flat, emphasisStyle: .muted)
-        configuration.pointOfInterestFilter = .excludingAll
-
         let options = MKMapSnapshotter.Options()
         options.region = region
         options.size = size
-        options.preferredConfiguration = configuration
+        options.preferredConfiguration = mapStyle.mapConfiguration
         return try await MKMapSnapshotter(options: options).start()
     }
 
@@ -239,6 +262,28 @@ struct RadarMapRenderer {
             guard rect.intersects(imageBounds) else { continue }
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: Self.radarTileAlpha)
         }
+
+        // Mark the configured location with a small white-ringed blue dot.
+        let markerPoint = snapshot.point(for: coordinate)
+        let marker = NSPoint(
+            x: markerPoint.x,
+            y: yIncreasesUpward ? markerPoint.y : imageSize.height - markerPoint.y
+        )
+        let ringRadius = Self.locationDotRadius + Self.locationDotRingWidth
+        NSColor.white.setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: marker.x - ringRadius,
+            y: marker.y - ringRadius,
+            width: ringRadius * 2,
+            height: ringRadius * 2
+        )).fill()
+        NSColor.systemBlue.setFill()
+        NSBezierPath(ovalIn: NSRect(
+            x: marker.x - Self.locationDotRadius,
+            y: marker.y - Self.locationDotRadius,
+            width: Self.locationDotRadius * 2,
+            height: Self.locationDotRadius * 2
+        )).fill()
 
         context.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()

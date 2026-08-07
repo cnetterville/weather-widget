@@ -7,5 +7,9 @@
 		<key>NSExtensionPointIdentifier</key>
 		<string>com.apple.widgetkit-extension</string>
 	</dict>
+	<key>NSWidgetWantsLocation</key>
+	<true/>
+	<key>NSLocationUsageDescription</key>
+	<string>Your location is used to center the radar map on where you are.</string>
 </dict>
 </plist>
