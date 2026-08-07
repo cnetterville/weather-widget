@@ -78,6 +78,10 @@ struct RadarWidgetEntryView: View {
         VStack(alignment: .leading, spacing: 2) {
             Text(entry.locationName)
                 .font(.headline)
+            if let rainChance = entry.rainChance {
+                Label("\(rainChance)% chance of rain today", systemImage: "umbrella.fill")
+                    .font(.caption)
+            }
             if let radarTime = entry.radarTime {
                 Text("Radar as of \(radarTime, style: .time)")
                     .font(.caption2)

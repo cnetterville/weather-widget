@@ -14,6 +14,7 @@ enum RadarEntryCache {
         let savedAt: Date
         let radarTime: Date?
         let locationName: String
+        let rainChance: Int?
         let warningTitle: String?
         let warningCode: String?
     }
