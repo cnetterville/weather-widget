@@ -14,10 +14,20 @@ struct RadarEntry: TimelineEntry {
     let locationName: String
     let image: NSImage?
     let radarTime: Date?
+    let warningTitle: String?
+    let warningCode: String?
     let errorMessage: String?
 
     static func placeholder() -> RadarEntry {
-        RadarEntry(date: .now, locationName: "Weather Radar", image: nil, radarTime: nil, errorMessage: nil)
+        RadarEntry(
+            date: .now,
+            locationName: "Weather Radar",
+            image: nil,
+            radarTime: nil,
+            warningTitle: nil,
+            warningCode: nil,
+            errorMessage: nil
+        )
     }
 }
 
@@ -43,6 +53,7 @@ struct RadarProvider: AppIntentTimelineProvider {
 
     private func makeEntry(for configuration: RadarConfigurationIntent, in context: Context) async -> RadarEntry {
         let query = configuration.location.trimmingCharacters(in: .whitespacesAndNewlines)
+        let cacheKey = RadarEntryCache.key(for: configuration, displaySize: context.displaySize)
         do {
             let place = try await resolvePlace(for: configuration, query: query)
             let renderer = RadarMapRenderer(
@@ -52,33 +63,65 @@ struct RadarProvider: AppIntentTimelineProvider {
                 // Render at 2x the widget's point size so the map stays sharp.
                 size: CGSize(width: context.displaySize.width * 2, height: context.displaySize.height * 2)
             )
-            let (image, radarTime) = try await renderer.render()
+            let result = try await renderer.render()
+            RadarEntryCache.save(
+                image: result.image,
+                metadata: RadarEntryCache.Metadata(
+                    savedAt: .now,
+                    radarTime: result.radarTime,
+                    locationName: place.name,
+                    warningTitle: result.topWarning?.eventName,
+                    warningCode: result.topWarning?.phenomena
+                ),
+                key: cacheKey
+            )
             return RadarEntry(
                 date: .now,
                 locationName: place.name,
-                image: image,
-                radarTime: radarTime,
+                image: result.image,
+                radarTime: result.radarTime,
+                warningTitle: result.topWarning?.eventName,
+                warningCode: result.topWarning?.phenomena,
                 errorMessage: nil
             )
-        } catch RadarRenderError.currentLocationUnavailable {
-            return RadarEntry(
-                date: .now,
-                locationName: "Current Location",
-                image: nil,
-                radarTime: nil,
-                errorMessage: "Location unavailable. Open Weather Widget, allow location access, and approve widget access when adding the widget."
-            )
         } catch {
-            return RadarEntry(
-                date: .now,
-                locationName: query,
-                image: nil,
-                radarTime: nil,
-                errorMessage: query.isEmpty
-                    ? "Edit the widget to choose a location."
-                    : "Couldn’t load radar for “\(query)”."
-            )
+            // Fall back to the last successful render before showing an error.
+            if let cached = RadarEntryCache.load(key: cacheKey) {
+                return RadarEntry(
+                    date: .now,
+                    locationName: cached.metadata.locationName,
+                    image: cached.image,
+                    radarTime: cached.metadata.radarTime,
+                    warningTitle: cached.metadata.warningTitle,
+                    warningCode: cached.metadata.warningCode,
+                    errorMessage: nil
+                )
+            }
+            return errorEntry(for: error, query: query)
         }
+    }
+
+    private func errorEntry(for error: Error, query: String) -> RadarEntry {
+        let locationName: String
+        let message: String
+        if case RadarRenderError.currentLocationUnavailable = error {
+            locationName = "Current Location"
+            message = "Location unavailable. Open Weather Widget, allow location access, and approve widget access when adding the widget."
+        } else {
+            locationName = query
+            message = query.isEmpty
+                ? "Edit the widget to choose a location."
+                : "Couldn’t load radar for “\(query)”."
+        }
+        return RadarEntry(
+            date: .now,
+            locationName: locationName,
+            image: nil,
+            radarTime: nil,
+            warningTitle: nil,
+            warningCode: nil,
+            errorMessage: message
+        )
     }
 
     private func resolvePlace(

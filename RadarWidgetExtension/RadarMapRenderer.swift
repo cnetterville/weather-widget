@@ -19,8 +19,8 @@ enum RadarRenderError: Error {
 /// on top of it. Radar coverage is US-only; elsewhere the tiles are empty
 /// and the widget shows the plain map.
 extension RadarMapStyle {
-    /// The MapKit configuration for this style. Standard and hybrid styles
-    /// exclude points of interest so pins don't clutter the weather map.
+    /// The MapKit configuration for this style. Standard styles exclude
+    /// points of interest so pins don't clutter the weather map.
     var mapConfiguration: MKMapConfiguration {
         switch self {
         case .muted:
@@ -33,10 +33,6 @@ extension RadarMapStyle {
             return configuration
         case .satellite:
             return MKImageryMapConfiguration(elevationStyle: .flat)
-        case .hybrid:
-            let configuration = MKHybridMapConfiguration(elevationStyle: .flat)
-            configuration.pointOfInterestFilter = .excludingAll
-            return configuration
         }
     }
 }
@@ -54,15 +50,44 @@ struct RadarMapRenderer {
     private static let locationDotRadius: CGFloat = 7
     private static let locationDotRingWidth: CGFloat = 3
 
-    func render() async throws -> (image: NSImage, radarTime: Date?) {
+    struct Result {
+        let image: NSImage
+        let radarTime: Date?
+        /// The most dangerous active warning visible in the rendered area.
+        let topWarning: StormWarning?
+    }
+
+    func render() async throws -> Result {
         let snapshot = try await takeSnapshot()
         let zoom = tileZoom()
         // Radar being briefly unreachable shouldn't blank the widget; with no
-        // tiles, draw(_:_:_:) still produces the map with the location dot.
-        let tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom)
-        let composited = draw(tiles: tiles, zoom: zoom, over: snapshot)
+        // tiles, draw() still produces the map with the location dot.
+        async let tilesTask = fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom)
+        async let warningsTask = StormWarningFeed.activeWarnings()
+        let tiles = await tilesTask
+        let visibleWarnings = visible(warnings: await warningsTask)
+
+        let composited = draw(tiles: tiles, warnings: visibleWarnings, zoom: zoom, over: snapshot)
         let radarTime = tiles.isEmpty ? nil : await Self.radarTimestamp()
-        return (composited, radarTime)
+        let topWarning = StormWarning.priority
+            .compactMap { code in visibleWarnings.first { $0.phenomena == code } }
+            .first
+        return Result(image: composited, radarTime: radarTime, topWarning: topWarning)
+    }
+
+    /// Warnings that overlap the rendered area (with the same margin used
+    /// for tile coverage).
+    private func visible(warnings: [StormWarning]) -> [StormWarning] {
+        let center = region.center
+        let span = region.span
+        return warnings.filter {
+            $0.intersects(
+                minLatitude: center.latitude - span.latitudeDelta * 0.7,
+                maxLatitude: center.latitude + span.latitudeDelta * 0.7,
+                minLongitude: center.longitude - span.longitudeDelta * 0.7,
+                maxLongitude: center.longitude + span.longitudeDelta * 0.7
+            )
+        }
     }
 
     // MARK: - Map snapshot
@@ -209,6 +234,7 @@ struct RadarMapRenderer {
 
     private func draw(
         tiles: [(tile: TileCoordinate, image: NSImage)],
+        warnings: [StormWarning],
         zoom: Int,
         over snapshot: MKMapSnapshotter.Snapshot
     ) -> NSImage {
@@ -261,6 +287,31 @@ struct RadarMapRenderer {
             let rect = NSRect(x: left, y: bottom, width: width, height: height)
             guard rect.intersects(imageBounds) else { continue }
             image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: Self.radarTileAlpha)
+        }
+
+        // Outline active warning polygons, least dangerous first so the most
+        // dangerous draw on top.
+        let toImagePoint = { (coordinate: CLLocationCoordinate2D) -> NSPoint in
+            let point = snapshot.point(for: coordinate)
+            return NSPoint(
+                x: point.x,
+                y: yIncreasesUpward ? point.y : imageSize.height - point.y
+            )
+        }
+        for code in StormWarning.priority.reversed() {
+            for warning in warnings where warning.phenomena == code {
+                for ring in warning.rings where ring.count > 2 {
+                    let path = NSBezierPath()
+                    path.move(to: toImagePoint(ring[0]))
+                    for coordinate in ring.dropFirst() {
+                        path.line(to: toImagePoint(coordinate))
+                    }
+                    path.close()
+                    path.lineWidth = 4
+                    warning.color.withAlphaComponent(0.9).setStroke()
+                    path.stroke()
+                }
+            }
         }
 
         // Mark the configured location with a small white-ringed blue dot.

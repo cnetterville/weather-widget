@@ -40,13 +40,17 @@ struct RadarWidgetEntryView: View {
     @ViewBuilder
     private var content: some View {
         if entry.image != nil {
-            VStack {
+            VStack(alignment: .leading) {
+                if let warningTitle = entry.warningTitle {
+                    warningBadge(warningTitle)
+                }
                 Spacer()
                 HStack {
                     caption
                     Spacer()
                 }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(12)
         } else if let message = entry.errorMessage {
             statusView(systemImage: "exclamationmark.triangle", title: "Radar Unavailable", message: message)
@@ -83,6 +87,37 @@ struct RadarWidgetEntryView: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private func warningBadge(_ title: String) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: "exclamationmark.triangle.fill")
+            Text(title)
+        }
+        .font(.caption.bold())
+        .foregroundStyle(badgeTextColor)
+        .padding(.horizontal, 10)
+        .padding(.vertical, 5)
+        .background(badgeColor, in: Capsule())
+    }
+
+    private var badgeColor: Color {
+        switch entry.warningCode {
+        case "TO": .red
+        case "SV": .yellow
+        case "FF": .green
+        case "MA": .purple
+        case "FA", "FL": .teal
+        default: .orange
+        }
+    }
+
+    private var badgeTextColor: Color {
+        // Dark text on the light badge colors, white on the dark ones.
+        switch entry.warningCode {
+        case "SV", "FF", "FA", "FL": .black
+        default: .white
+        }
     }
 
     private func statusView(systemImage: String, title: String, message: String) -> some View {

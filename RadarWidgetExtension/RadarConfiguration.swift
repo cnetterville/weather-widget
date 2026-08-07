@@ -46,7 +46,6 @@ enum RadarMapStyle: String, AppEnum {
     case muted
     case standard
     case satellite
-    case hybrid
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation {
         "Map Style"
@@ -57,7 +56,6 @@ enum RadarMapStyle: String, AppEnum {
             .muted: "Muted (radar stands out)",
             .standard: "Standard",
             .satellite: "Satellite",
-            .hybrid: "Hybrid (satellite + labels)",
         ]
     }
 }
