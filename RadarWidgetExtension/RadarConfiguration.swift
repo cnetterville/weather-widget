@@ -78,4 +78,23 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
 
     @Parameter(title: "Map Style", default: .muted)
     var mapStyle: RadarMapStyle
+
+    /// Hide the typed-location field while following the Mac's location;
+    /// the widget caption shows the detected city instead.
+    static var parameterSummary: some ParameterSummary {
+        When(\.$useCurrentLocation, .equalTo, true) {
+            Summary {
+                \.$useCurrentLocation
+                \.$zoom
+                \.$mapStyle
+            }
+        } otherwise: {
+            Summary {
+                \.$useCurrentLocation
+                \.$location
+                \.$zoom
+                \.$mapStyle
+            }
+        }
+    }
 }
