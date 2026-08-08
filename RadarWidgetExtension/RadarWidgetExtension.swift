@@ -81,17 +81,21 @@ struct RadarWidgetEntryView: View {
             if let rainChance = entry.rainChance {
                 Label("\(rainChance)% chance of rain today", systemImage: "umbrella.fill")
                     .font(.caption)
+                    .foregroundStyle(.white.opacity(0.9))
             }
             if let radarTime = entry.radarTime {
                 Text("Radar as of \(radarTime, style: .time)")
                     .font(.caption2)
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(.white.opacity(0.75))
             }
         }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.6), radius: 1)
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        // Ultra-thin so radar echoes passing under the caption stay visible.
-        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
+        // A light translucent tint rather than a material: widget snapshots
+        // render materials as nearly opaque, hiding radar under the caption.
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func warningBadge(_ title: String) -> some View {
