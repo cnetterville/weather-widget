@@ -90,7 +90,8 @@ struct RadarWidgetEntryView: View {
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 6)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+        // Ultra-thin so radar echoes passing under the caption stay visible.
+        .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 10))
     }
 
     private func warningBadge(_ title: String) -> some View {
