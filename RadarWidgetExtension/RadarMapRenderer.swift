@@ -4,6 +4,7 @@
 //
 
 import AppKit
+import CoreImage
 import CoreLocation
 import Foundation
 import MapKit
@@ -12,6 +13,18 @@ enum RadarRenderError: Error {
     case emptyLocation
     case locationNotFound
     case currentLocationUnavailable
+}
+
+/// Shared session with tight timeouts. WidgetKit gives a render a short
+/// budget; a stalled request must fail fast (dropping that tile or data
+/// layer) rather than time the whole render out and leave stale content.
+enum RadarNetwork {
+    static let session: URLSession = {
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 8
+        configuration.timeoutIntervalForResource = 15
+        return URLSession(configuration: configuration)
+    }()
 }
 
 /// Captures an Apple Maps snapshot of an area and composites the latest
@@ -171,7 +184,7 @@ struct RadarMapRenderer {
     /// tile-service index. Purely informational — the overlay works without it.
     private static func nexradTimestamp() async -> Date? {
         let url = URL(string: "https://mesonet.agron.iastate.edu/json/tms.json")!
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+        guard let (data, _) = try? await RadarNetwork.session.data(from: url),
               let index = try? JSONDecoder().decode(TileServices.self, from: data),
               let service = index.services.first(where: { $0.id == "ridge_uscomp_n0q" })
         else {
@@ -196,7 +209,7 @@ struct RadarMapRenderer {
     /// The newest RainViewer radar frame (host + path + capture time).
     private static func rainViewerFrame() async -> (host: String, path: String, time: Date)? {
         let url = URL(string: "https://api.rainviewer.com/public/weather-maps.json")!
-        guard let (data, _) = try? await URLSession.shared.data(from: url),
+        guard let (data, _) = try? await RadarNetwork.session.data(from: url),
               let maps = try? JSONDecoder().decode(WeatherMaps.self, from: data),
               let latest = maps.radar.past.max(by: { $0.time < $1.time })
         else {
@@ -277,7 +290,7 @@ struct RadarMapRenderer {
                 group.addTask {
                     let wrappedX = ((tile.x % n) + n) % n
                     guard let url = layer.url(zoom: zoom, x: wrappedX, y: tile.y),
-                          let (data, response) = try? await URLSession.shared.data(from: url),
+                          let (data, response) = try? await RadarNetwork.session.data(from: url),
                           (response as? HTTPURLResponse)?.statusCode == 200,
                           let image = NSImage(data: data)
                     else {
@@ -294,6 +307,76 @@ struct RadarMapRenderer {
             }
             return results
         }
+    }
+
+    /// Draws the tiles at full opacity into a transparent layer, smoothing
+    /// the ~1 km radar data cells when they'd read as visible blocks.
+    private func radarLayer(
+        tiles: [(tile: TileCoordinate, image: NSImage)],
+        zoom: Int,
+        imageSize: NSSize,
+        toImagePoint: (CLLocationCoordinate2D) -> NSPoint
+    ) -> NSImage? {
+        guard !tiles.isEmpty,
+              let bitmap = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: Int(imageSize.width),
+                pixelsHigh: Int(imageSize.height),
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 0,
+                bitsPerPixel: 0),
+              let context = NSGraphicsContext(bitmapImageRep: bitmap)
+        else {
+            return nil
+        }
+        bitmap.size = imageSize
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        let imageBounds = NSRect(origin: .zero, size: imageSize)
+        for (tile, image) in tiles {
+            let northWest = toImagePoint(Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: zoom))
+            let southEast = toImagePoint(Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: zoom))
+            let rect = NSRect(
+                x: min(northWest.x, southEast.x),
+                y: min(northWest.y, southEast.y),
+                width: abs(southEast.x - northWest.x),
+                height: abs(southEast.y - northWest.y)
+            )
+            guard rect.intersects(imageBounds) else { continue }
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+        }
+        context.flushGraphics()
+        NSGraphicsContext.restoreGraphicsState()
+
+        // Size of one ~1 km radar data cell in image pixels; only smooth
+        // when cells are large enough to look blocky.
+        let pixelsPerKilometer = Double(imageSize.height) / (latitudeSpan * 111)
+        let blurRadius = pixelsPerKilometer * 0.5
+        if blurRadius >= 1.5, let smoothed = Self.blurred(bitmap, radius: blurRadius) {
+            return smoothed
+        }
+        let image = NSImage(size: imageSize)
+        image.addRepresentation(bitmap)
+        return image
+    }
+
+    private static func blurred(_ bitmap: NSBitmapImageRep, radius: Double) -> NSImage? {
+        guard let cgImage = bitmap.cgImage else { return nil }
+        let input = CIImage(cgImage: cgImage)
+        let filter = CIFilter(name: "CIGaussianBlur")
+        filter?.setValue(input.clampedToExtent(), forKey: kCIInputImageKey)
+        filter?.setValue(radius, forKey: kCIInputRadiusKey)
+        guard let output = filter?.outputImage?.cropped(to: input.extent),
+              let result = CIContext().createCGImage(output, from: input.extent)
+        else {
+            return nil
+        }
+        return NSImage(cgImage: result, size: bitmap.size)
     }
 
     private func draw(
@@ -331,30 +414,7 @@ struct RadarMapRenderer {
         )
         let yIncreasesUpward = snapshot.point(for: northCoordinate).y > centerPoint.y
 
-        NSGraphicsContext.saveGraphicsState()
-        NSGraphicsContext.current = context
-        mapImage.draw(in: NSRect(origin: .zero, size: imageSize))
-
-        let imageBounds = NSRect(origin: .zero, size: imageSize)
-        for (tile, image) in tiles {
-            let northWest = snapshot.point(for: Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: zoom))
-            let southEast = snapshot.point(for: Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: zoom))
-
-            let width = abs(southEast.x - northWest.x)
-            let height = abs(southEast.y - northWest.y)
-            let left = min(northWest.x, southEast.x)
-            // The drawing context uses a bottom-left origin.
-            let bottom = yIncreasesUpward
-                ? min(northWest.y, southEast.y)
-                : imageSize.height - max(northWest.y, southEast.y)
-
-            let rect = NSRect(x: left, y: bottom, width: width, height: height)
-            guard rect.intersects(imageBounds) else { continue }
-            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: Self.radarTileAlpha)
-        }
-
-        // Outline active warning polygons, least dangerous first so the most
-        // dangerous draw on top.
+        // Converts a coordinate to the drawing context's bottom-left origin.
         let toImagePoint = { (coordinate: CLLocationCoordinate2D) -> NSPoint in
             let point = snapshot.point(for: coordinate)
             return NSPoint(
@@ -362,6 +422,24 @@ struct RadarMapRenderer {
                 y: yIncreasesUpward ? point.y : imageSize.height - point.y
             )
         }
+
+        NSGraphicsContext.saveGraphicsState()
+        NSGraphicsContext.current = context
+        mapImage.draw(in: NSRect(origin: .zero, size: imageSize))
+
+        // Composite the tiles into their own layer so close zooms can be
+        // smoothed before blending onto the map.
+        if let radarLayer = radarLayer(tiles: tiles, zoom: zoom, imageSize: imageSize, toImagePoint: toImagePoint) {
+            radarLayer.draw(
+                in: NSRect(origin: .zero, size: imageSize),
+                from: .zero,
+                operation: .sourceOver,
+                fraction: Self.radarTileAlpha
+            )
+        }
+
+        // Outline active warning polygons, least dangerous first so the most
+        // dangerous draw on top.
         for code in StormWarning.priority.reversed() {
             for warning in warnings where warning.phenomena == code {
                 for ring in warning.rings where ring.count > 2 {

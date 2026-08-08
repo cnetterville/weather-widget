@@ -108,7 +108,7 @@ enum StormWarningFeed {
     /// whole render.
     static func activeWarnings() async -> [StormWarning] {
         guard let url = URL(string: "https://mesonet.agron.iastate.edu/geojson/sbw.geojson"),
-              let (data, _) = try? await URLSession.shared.data(from: url),
+              let (data, _) = try? await RadarNetwork.session.data(from: url),
               let collection = try? JSONDecoder().decode(FeatureCollection.self, from: data)
         else {
             return []

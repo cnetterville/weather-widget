@@ -28,7 +28,7 @@ enum RainForecast {
             URLQueryItem(name: "forecast_days", value: "1"),
         ]
         guard let url = components.url,
-              let (data, _) = try? await URLSession.shared.data(from: url),
+              let (data, _) = try? await RadarNetwork.session.data(from: url),
               let response = try? JSONDecoder().decode(Response.self, from: data)
         else {
             return nil

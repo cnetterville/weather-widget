@@ -156,13 +156,37 @@ struct RadarProvider: AppIntentTimelineProvider {
         return manager.location
     }
 
+    // Geocoding results are cached permanently: places don't move, and
+    // Apple throttles apps that re-geocode the same string repeatedly —
+    // which a widget refreshing every few minutes would otherwise do.
+
     private func reverseGeocodedName(for location: CLLocation) async -> String? {
-        guard let request = MKReverseGeocodingRequest(location: location) else { return nil }
-        let mapItems = try? await request.mapItems
-        return mapItems?.first?.addressRepresentations?.cityWithContext(.automatic)
+        let cacheKey = String(
+            format: "reverse-geocode:%.2f,%.2f",
+            location.coordinate.latitude,
+            location.coordinate.longitude
+        )
+        if let cached = UserDefaults.standard.string(forKey: cacheKey) {
+            return cached
+        }
+        guard let request = MKReverseGeocodingRequest(location: location),
+              let mapItems = try? await request.mapItems,
+              let name = mapItems.first?.addressRepresentations?.cityWithContext(.automatic)
+        else {
+            return nil
+        }
+        UserDefaults.standard.set(name, forKey: cacheKey)
+        return name
     }
 
     private func geocode(_ query: String) async throws -> (coordinate: CLLocationCoordinate2D, name: String) {
+        let cacheKey = "geocode:" + query.lowercased()
+        if let cached = UserDefaults.standard.dictionary(forKey: cacheKey),
+           let latitude = cached["latitude"] as? Double,
+           let longitude = cached["longitude"] as? Double,
+           let name = cached["name"] as? String {
+            return (CLLocationCoordinate2D(latitude: latitude, longitude: longitude), name)
+        }
         guard let request = MKGeocodingRequest(addressString: query) else {
             throw RadarRenderError.emptyLocation
         }
@@ -170,7 +194,12 @@ struct RadarProvider: AppIntentTimelineProvider {
         guard let item = mapItems.first else {
             throw RadarRenderError.locationNotFound
         }
+        let coordinate = item.location.coordinate
         let name = item.addressRepresentations?.cityWithContext(.automatic) ?? item.name ?? query
-        return (item.location.coordinate, name)
+        UserDefaults.standard.set(
+            ["latitude": coordinate.latitude, "longitude": coordinate.longitude, "name": name],
+            forKey: cacheKey
+        )
+        return (coordinate, name)
     }
 }
