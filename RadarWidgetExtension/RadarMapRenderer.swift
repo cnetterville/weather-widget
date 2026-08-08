@@ -41,11 +41,11 @@ struct RadarMapRenderer {
     let coordinate: CLLocationCoordinate2D
     let latitudeSpan: Double
     let mapStyle: RadarMapStyle
+    let radarSource: RadarSource
     let size: CGSize
 
     private static let radarTileAlpha: CGFloat = 0.7
     private static let maximumTileCount = 48
-    private static let tileZoomRange = 2...12
     // In image pixels; the image renders at 2x the widget's point size.
     private static let locationDotRadius: CGFloat = 7
     private static let locationDotRingWidth: CGFloat = 3
@@ -59,16 +59,21 @@ struct RadarMapRenderer {
 
     func render() async throws -> Result {
         let snapshot = try await takeSnapshot()
-        let zoom = tileZoom()
-        // Radar being briefly unreachable shouldn't blank the widget; with no
-        // tiles, draw() still produces the map with the location dot.
-        async let tilesTask = fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom)
         async let warningsTask = StormWarningFeed.activeWarnings()
-        let tiles = await tilesTask
+
+        // Radar being briefly unreachable shouldn't blank the widget; with no
+        // layer or tiles, draw() still produces the map with the location dot.
+        var tiles: [(tile: TileCoordinate, image: NSImage)] = []
+        var zoom = 0
+        let layer = await tileLayer()
+        if let layer {
+            zoom = tileZoom(for: layer)
+            tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom, layer: layer)
+        }
         let visibleWarnings = visible(warnings: await warningsTask)
 
         let composited = draw(tiles: tiles, warnings: visibleWarnings, zoom: zoom, over: snapshot)
-        let radarTime = tiles.isEmpty ? nil : await Self.radarTimestamp()
+        let radarTime = tiles.isEmpty ? nil : layer?.time
         let topWarning = StormWarning.priority
             .compactMap { code in visibleWarnings.first { $0.phenomena == code } }
             .first
@@ -112,12 +117,47 @@ struct RadarMapRenderer {
         return try await MKMapSnapshotter(options: options).start()
     }
 
-    // MARK: - IEM NEXRAD radar data
+    // MARK: - Radar tile sources
 
-    /// The IEM base-reflectivity CONUS composite, regenerated about every
-    /// 5 minutes. Standard XYZ Web Mercator tiles, 256 px.
-    private static let tileURLTemplate =
-        "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913"
+    /// A resolved tile layer: where tiles live and what they look like.
+    private struct TileLayer {
+        let time: Date?
+        let tileSize: Double
+        let zoomRange: ClosedRange<Int>
+        /// URL pieces around the /{z}/{x}/{y} path component.
+        let urlPrefix: String
+        let urlSuffix: String
+
+        func url(zoom: Int, x: Int, y: Int) -> URL? {
+            URL(string: "\(urlPrefix)/\(zoom)/\(x)/\(y)\(urlSuffix)")
+        }
+    }
+
+    private func tileLayer() async -> TileLayer? {
+        switch radarSource {
+        case .nexrad:
+            // IEM's base-reflectivity US composite, regenerated about every
+            // 5 minutes. Real detail well past zoom 7.
+            return TileLayer(
+                time: await Self.nexradTimestamp(),
+                tileSize: 256,
+                zoomRange: 2...12,
+                urlPrefix: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913",
+                urlSuffix: ".png"
+            )
+        case .worldwide:
+            // RainViewer aggregates national radar networks worldwide. The
+            // free API caps tiles at zoom 7, Universal Blue color scheme.
+            guard let frame = await Self.rainViewerFrame() else { return nil }
+            return TileLayer(
+                time: frame.time,
+                tileSize: 512,
+                zoomRange: 2...7,
+                urlPrefix: "\(frame.host)\(frame.path)/512",
+                urlSuffix: "/2/1_1.png"
+            )
+        }
+    }
 
     private struct TileServices: Decodable {
         struct Service: Decodable {
@@ -127,9 +167,9 @@ struct RadarMapRenderer {
         let services: [Service]
     }
 
-    /// The generation time of the current composite, from IEM's tile-service
-    /// index. Purely informational — the overlay works without it.
-    private static func radarTimestamp() async -> Date? {
+    /// The generation time of the current IEM composite, from its
+    /// tile-service index. Purely informational — the overlay works without it.
+    private static func nexradTimestamp() async -> Date? {
         let url = URL(string: "https://mesonet.agron.iastate.edu/json/tms.json")!
         guard let (data, _) = try? await URLSession.shared.data(from: url),
               let index = try? JSONDecoder().decode(TileServices.self, from: data),
@@ -139,6 +179,30 @@ struct RadarMapRenderer {
         }
         let formatter = ISO8601DateFormatter()
         return formatter.date(from: service.utc_valid)
+    }
+
+    private struct WeatherMaps: Decodable {
+        struct Frame: Decodable {
+            let time: Int
+            let path: String
+        }
+        struct Radar: Decodable {
+            let past: [Frame]
+        }
+        let host: String
+        let radar: Radar
+    }
+
+    /// The newest RainViewer radar frame (host + path + capture time).
+    private static func rainViewerFrame() async -> (host: String, path: String, time: Date)? {
+        let url = URL(string: "https://api.rainviewer.com/public/weather-maps.json")!
+        guard let (data, _) = try? await URLSession.shared.data(from: url),
+              let maps = try? JSONDecoder().decode(WeatherMaps.self, from: data),
+              let latest = maps.radar.past.max(by: { $0.time < $1.time })
+        else {
+            return nil
+        }
+        return (maps.host, latest.path, Date(timeIntervalSince1970: TimeInterval(latest.time)))
     }
 
     // MARK: - Tile math (Web Mercator, shared by IEM and Apple Maps)
@@ -167,11 +231,11 @@ struct RadarMapRenderer {
 
     /// Picks a tile zoom whose resolution roughly matches the snapshot,
     /// backing off until the tile count is reasonable.
-    private func tileZoom() -> Int {
+    private func tileZoom(for layer: TileLayer) -> Int {
         let pixelsPerLongitudeDegree = Double(size.width) / region.span.longitudeDelta
-        let ideal = Int((log2(pixelsPerLongitudeDegree * 360 / 256)).rounded())
-        var zoom = min(max(ideal, Self.tileZoomRange.lowerBound), Self.tileZoomRange.upperBound)
-        while zoom > Self.tileZoomRange.lowerBound, tileRange(zoom: zoom).count > Self.maximumTileCount {
+        let ideal = Int((log2(pixelsPerLongitudeDegree * 360 / layer.tileSize)).rounded())
+        var zoom = min(max(ideal, layer.zoomRange.lowerBound), layer.zoomRange.upperBound)
+        while zoom > layer.zoomRange.lowerBound, tileRange(zoom: zoom).count > Self.maximumTileCount {
             zoom -= 1
         }
         return zoom
@@ -204,15 +268,15 @@ struct RadarMapRenderer {
 
     private func fetchTileImages(
         tiles: [TileCoordinate],
-        zoom: Int
+        zoom: Int,
+        layer: TileLayer
     ) async -> [(tile: TileCoordinate, image: NSImage)] {
         let n = 1 << zoom
         return await withTaskGroup(of: (TileCoordinate, NSImage?).self) { group in
             for tile in tiles {
                 group.addTask {
                     let wrappedX = ((tile.x % n) + n) % n
-                    let urlString = "\(Self.tileURLTemplate)/\(zoom)/\(wrappedX)/\(tile.y).png"
-                    guard let url = URL(string: urlString),
+                    guard let url = layer.url(zoom: zoom, x: wrappedX, y: tile.y),
                           let (data, response) = try? await URLSession.shared.data(from: url),
                           (response as? HTTPURLResponse)?.statusCode == 200,
                           let image = NSImage(data: data)

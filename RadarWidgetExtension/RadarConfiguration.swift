@@ -60,6 +60,26 @@ enum RadarMapStyle: String, AppEnum {
     }
 }
 
+/// Where the precipitation imagery comes from.
+enum RadarSource: String, AppEnum {
+    /// Iowa Environmental Mesonet NEXRAD composite — US only, sharper detail.
+    case nexrad
+    /// RainViewer aggregate — worldwide (includes Mexico via CONAGUA), but
+    /// tile detail is capped at zoom 7 and no warning polygons apply abroad.
+    case worldwide
+
+    static var typeDisplayRepresentation: TypeDisplayRepresentation {
+        "Radar Source"
+    }
+
+    static var caseDisplayRepresentations: [RadarSource: DisplayRepresentation] {
+        [
+            .nexrad: "United States (sharper)",
+            .worldwide: "Worldwide",
+        ]
+    }
+}
+
 /// The user-editable options shown when someone edits the radar widget.
 struct RadarConfigurationIntent: WidgetConfigurationIntent {
     static var title: LocalizedStringResource { "Radar Area" }
@@ -79,6 +99,9 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
     @Parameter(title: "Map Style", default: .muted)
     var mapStyle: RadarMapStyle
 
+    @Parameter(title: "Radar Source", default: .nexrad)
+    var radarSource: RadarSource
+
     /// Hide the typed-location field while following the Mac's location;
     /// the widget caption shows the detected city instead.
     static var parameterSummary: some ParameterSummary {
@@ -87,6 +110,7 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
                 \.$useCurrentLocation
                 \.$zoom
                 \.$mapStyle
+                \.$radarSource
             }
         } otherwise: {
             Summary {
@@ -94,6 +118,7 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
                 \.$location
                 \.$zoom
                 \.$mapStyle
+                \.$radarSource
             }
         }
     }

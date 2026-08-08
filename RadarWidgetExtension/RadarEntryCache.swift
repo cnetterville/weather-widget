@@ -37,6 +37,7 @@ enum RadarEntryCache {
             configuration.useCurrentLocation ? "current-location" : configuration.location,
             configuration.zoom.rawValue,
             configuration.mapStyle.rawValue,
+            configuration.radarSource.rawValue,
             "\(Int(displaySize.width))x\(Int(displaySize.height))",
         ]
         let digest = SHA256.hash(data: Data(components.joined(separator: "|").utf8))

@@ -62,6 +62,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                 coordinate: place.coordinate,
                 latitudeSpan: configuration.zoom.latitudeSpan,
                 mapStyle: configuration.mapStyle,
+                radarSource: configuration.radarSource,
                 // Render at 2x the widget's point size so the map stays sharp.
                 size: CGSize(width: context.displaySize.width * 2, height: context.displaySize.height * 2)
             )
