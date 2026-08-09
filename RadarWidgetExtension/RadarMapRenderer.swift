@@ -73,6 +73,7 @@ struct RadarMapRenderer {
     func render() async throws -> Result {
         let snapshot = try await takeSnapshot()
         async let warningsTask = StormWarningFeed.activeWarnings()
+        async let cellsTask = StormCellFeed.activeCells()
 
         // Radar being briefly unreachable shouldn't blank the widget; with no
         // layer or tiles, draw() still produces the map with the location dot.
@@ -84,8 +85,15 @@ struct RadarMapRenderer {
             tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom, layer: layer)
         }
         let visibleWarnings = visible(warnings: await warningsTask)
+        let visibleCells = visible(cells: await cellsTask)
 
-        let composited = draw(tiles: tiles, warnings: visibleWarnings, zoom: zoom, over: snapshot)
+        let composited = draw(
+            tiles: tiles,
+            warnings: visibleWarnings,
+            cells: visibleCells,
+            zoom: zoom,
+            over: snapshot
+        )
         let radarTime = tiles.isEmpty ? nil : layer?.time
         let topWarning = StormWarning.priority
             .compactMap { code in visibleWarnings.first { $0.phenomena == code } }
@@ -106,6 +114,21 @@ struct RadarMapRenderer {
                 maxLongitude: center.longitude + span.longitudeDelta * 0.7
             )
         }
+    }
+
+    /// The strongest tracked storm cells inside the rendered area, capped so
+    /// arrows never crowd the map at wide zooms.
+    private func visible(cells: [StormCell]) -> [StormCell] {
+        let center = region.center
+        let span = region.span
+        return cells
+            .filter {
+                abs($0.coordinate.latitude - center.latitude) < span.latitudeDelta / 2
+                    && abs($0.coordinate.longitude - center.longitude) < span.longitudeDelta / 2
+            }
+            .sorted { $0.maxDBZ > $1.maxDBZ }
+            .prefix(10)
+            .map { $0 }
     }
 
     // MARK: - Map snapshot
@@ -382,6 +405,7 @@ struct RadarMapRenderer {
     private func draw(
         tiles: [(tile: TileCoordinate, image: NSImage)],
         warnings: [StormWarning],
+        cells: [StormCell],
         zoom: Int,
         over snapshot: MKMapSnapshotter.Snapshot
     ) -> NSImage {
@@ -454,6 +478,45 @@ struct RadarMapRenderer {
                     path.stroke()
                 }
             }
+        }
+
+        // Arrows showing where tracked storm cells are heading, from the
+        // radar's own cell-motion vectors.
+        let imageBounds = NSRect(origin: .zero, size: imageSize)
+        for cell in cells {
+            let origin = toImagePoint(cell.coordinate)
+            guard imageBounds.contains(origin) else { continue }
+
+            // drct is the direction the cell moves FROM; the arrow points
+            // where it's heading. North is up (+y) in this context.
+            let heading = (cell.fromDirectionDegrees + 180) * .pi / 180
+            let length = min(26 + cell.speedKnots * 0.6, 60)
+            let head = NSPoint(
+                x: origin.x + sin(heading) * length,
+                y: origin.y + cos(heading) * length
+            )
+
+            let arrow = NSBezierPath()
+            arrow.lineCapStyle = .round
+            arrow.lineJoinStyle = .round
+            arrow.move(to: origin)
+            arrow.line(to: head)
+            for barbOffset in [Double.pi * 5 / 6, -Double.pi * 5 / 6] {
+                let barbAngle = heading + barbOffset
+                arrow.move(to: head)
+                arrow.line(to: NSPoint(
+                    x: head.x + sin(barbAngle) * 11,
+                    y: head.y + cos(barbAngle) * 11
+                ))
+            }
+
+            // Dark halo first so the arrow reads over any radar color.
+            NSColor.black.withAlphaComponent(0.55).setStroke()
+            arrow.lineWidth = 6
+            arrow.stroke()
+            NSColor.white.setStroke()
+            arrow.lineWidth = 2.5
+            arrow.stroke()
         }
 
         // Mark the configured location with a small white-ringed blue dot.
