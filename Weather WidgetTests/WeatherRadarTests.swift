@@ -1,6 +1,6 @@
 //
-//  Weather_WidgetTests.swift
-//  Weather WidgetTests
+//  WeatherRadarTests.swift
+//  Weather Radar Tests
 //
 //  Created by Curtis Netterville on 8/7/26.
 //
@@ -8,7 +8,7 @@
 import Testing
 @testable import Weather_Widget
 
-struct Weather_WidgetTests {
+struct WeatherRadarTests {
 
     @Test func example() async throws {
         // Write your test here and use APIs like `#expect(...)` to check expected conditions.

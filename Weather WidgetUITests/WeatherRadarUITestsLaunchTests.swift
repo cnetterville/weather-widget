@@ -1,13 +1,13 @@
 //
-//  Weather_WidgetUITestsLaunchTests.swift
-//  Weather WidgetUITests
+//  WeatherRadarUITestsLaunchTests.swift
+//  Weather Radar UI Tests
 //
 //  Created by Curtis Netterville on 8/7/26.
 //
 
 import XCTest
 
-final class Weather_WidgetUITestsLaunchTests: XCTestCase {
+final class WeatherRadarUITestsLaunchTests: XCTestCase {
 
     override class var runsForEachTargetApplicationUIConfiguration: Bool {
         true

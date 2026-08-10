@@ -1,6 +1,6 @@
 //
-//  Weather_WidgetApp.swift
-//  Weather Widget
+//  WeatherRadarApp.swift
+//  Weather Radar
 //
 //  Created by Curtis Netterville on 8/7/26.
 //
@@ -24,7 +24,7 @@ final class LocationPermission {
 }
 
 @main
-struct Weather_WidgetApp: App {
+struct WeatherRadarApp: App {
     init() {
         // Launching the app refreshes every radar widget immediately, so
         // configuration or code changes show up without waiting for the

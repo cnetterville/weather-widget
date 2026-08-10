@@ -115,7 +115,7 @@ struct RadarProvider: AppIntentTimelineProvider {
         let message: String
         if case RadarRenderError.currentLocationUnavailable = error {
             locationName = "Current Location"
-            message = "Location unavailable. Open Weather Widget, allow location access, and approve widget access when adding the widget."
+            message = "Location unavailable. Open the Weather Radar app, allow location access, and approve widget access when adding the widget."
         } else {
             locationName = query
             message = query.isEmpty

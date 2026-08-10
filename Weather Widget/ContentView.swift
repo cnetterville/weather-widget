@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  Weather Widget
+//  Weather Radar
 //
 //  Created by Curtis Netterville on 8/7/26.
 //
@@ -14,7 +14,7 @@ struct ContentView: View {
                 .font(.system(size: 56))
                 .foregroundStyle(.tint)
 
-            Text("Weather Radar Widget")
+            Text("Weather Radar")
                 .font(.title)
                 .fontWeight(.semibold)
 
