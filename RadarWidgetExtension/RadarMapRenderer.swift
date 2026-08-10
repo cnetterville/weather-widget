@@ -126,7 +126,13 @@ struct RadarMapRenderer {
                 abs($0.coordinate.latitude - center.latitude) < span.latitudeDelta / 2
                     && abs($0.coordinate.longitude - center.longitude) < span.longitudeDelta / 2
             }
-            .sorted { $0.maxDBZ > $1.maxDBZ }
+            .sorted {
+                // Hazard-flagged cells always make the cut before strong ones.
+                if $0.isFlagged != $1.isFlagged {
+                    return $0.isFlagged
+                }
+                return $0.maxDBZ > $1.maxDBZ
+            }
             .prefix(10)
             .map { $0 }
     }
@@ -485,7 +491,7 @@ struct RadarMapRenderer {
         let imageBounds = NSRect(origin: .zero, size: imageSize)
         for cell in cells {
             let origin = toImagePoint(cell.coordinate)
-            guard imageBounds.contains(origin) else { continue }
+            guard imageBounds.contains(origin), cell.isMoving else { continue }
 
             // drct is the direction the cell moves FROM; the arrow points
             // where it's heading. North is up (+y) in this context.
@@ -517,6 +523,51 @@ struct RadarMapRenderer {
             NSColor.white.setStroke()
             arrow.lineWidth = 2.5
             arrow.stroke()
+        }
+
+        // Hazard markers from the radar's cell signatures, drawn over the
+        // arrows: red inverted triangle for a tornado vortex signature,
+        // orange ring for a mesocyclone, cyan diamond for likely hail.
+        for cell in cells {
+            let origin = toImagePoint(cell.coordinate)
+            guard imageBounds.contains(origin) else { continue }
+
+            if cell.hasTornadoSignature {
+                let triangle = NSBezierPath()
+                triangle.move(to: NSPoint(x: origin.x - 9, y: origin.y + 8))
+                triangle.line(to: NSPoint(x: origin.x + 9, y: origin.y + 8))
+                triangle.line(to: NSPoint(x: origin.x, y: origin.y - 10))
+                triangle.close()
+                NSColor.systemRed.setFill()
+                triangle.fill()
+                NSColor.white.setStroke()
+                triangle.lineWidth = 2
+                triangle.stroke()
+            } else if cell.hasMesocyclone {
+                let ring = NSBezierPath(ovalIn: NSRect(x: origin.x - 11, y: origin.y - 11, width: 22, height: 22))
+                NSColor.black.withAlphaComponent(0.55).setStroke()
+                ring.lineWidth = 5.5
+                ring.stroke()
+                NSColor.systemOrange.setStroke()
+                ring.lineWidth = 3
+                ring.stroke()
+            }
+
+            if cell.hasHailIndicator {
+                // Offset right so it doesn't sit on a rotation marker.
+                let center = NSPoint(x: origin.x + 16, y: origin.y)
+                let diamond = NSBezierPath()
+                diamond.move(to: NSPoint(x: center.x, y: center.y + 8))
+                diamond.line(to: NSPoint(x: center.x + 7, y: center.y))
+                diamond.line(to: NSPoint(x: center.x, y: center.y - 8))
+                diamond.line(to: NSPoint(x: center.x - 7, y: center.y))
+                diamond.close()
+                NSColor.systemCyan.setFill()
+                diamond.fill()
+                NSColor.black.withAlphaComponent(0.7).setStroke()
+                diamond.lineWidth = 1.5
+                diamond.stroke()
+            }
         }
 
         // Mark the configured location with a small white-ringed blue dot.
