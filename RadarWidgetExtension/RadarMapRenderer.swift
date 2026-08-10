@@ -55,6 +55,7 @@ struct RadarMapRenderer {
     let latitudeSpan: Double
     let mapStyle: RadarMapStyle
     let radarSource: RadarSource
+    let showsClouds: Bool
     let size: CGSize
 
     private static let radarTileAlpha: CGFloat = 0.7
@@ -84,14 +85,24 @@ struct RadarMapRenderer {
             zoom = tileZoom(for: layer)
             tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom, layer: layer)
         }
+
+        var cloudTiles: [(tile: TileCoordinate, image: NSImage)] = []
+        var cloudZoom = 0
+        if showsClouds, let clouds = cloudLayer() {
+            cloudZoom = tileZoom(for: clouds)
+            cloudTiles = await fetchTileImages(tiles: tileRange(zoom: cloudZoom), zoom: cloudZoom, layer: clouds)
+        }
+
         let visibleWarnings = visible(warnings: await warningsTask)
         let visibleCells = visible(cells: await cellsTask)
 
         let composited = draw(
             tiles: tiles,
+            cloudTiles: cloudTiles,
             warnings: visibleWarnings,
             cells: visibleCells,
             zoom: zoom,
+            cloudZoom: cloudZoom,
             over: snapshot
         )
         let radarTime = tiles.isEmpty ? nil : layer?.time
@@ -169,10 +180,31 @@ struct RadarMapRenderer {
         /// URL pieces around the /{z}/{x}/{y} path component.
         let urlPrefix: String
         let urlSuffix: String
+        /// GIBS-style services order the path {z}/{y}/{x}.
+        var swapsXY = false
 
         func url(zoom: Int, x: Int, y: Int) -> URL? {
-            URL(string: "\(urlPrefix)/\(zoom)/\(x)/\(y)\(urlSuffix)")
+            let path = swapsXY ? "\(zoom)/\(y)/\(x)" : "\(zoom)/\(x)/\(y)"
+            return URL(string: "\(urlPrefix)/\(path)\(urlSuffix)")
         }
+    }
+
+    /// NASA GIBS GeoColor imagery from whichever GOES satellite best views
+    /// the area (day: true color; night: infrared). Nil outside GOES
+    /// coverage of the Americas.
+    private func cloudLayer() -> TileLayer? {
+        guard (-170.0...(-20.0)).contains(coordinate.longitude), abs(coordinate.latitude) < 60 else {
+            return nil
+        }
+        let satellite = coordinate.longitude < -105 ? "GOES-West_ABI_GeoColor" : "GOES-East_ABI_GeoColor"
+        return TileLayer(
+            time: nil,
+            tileSize: 256,
+            zoomRange: 1...7,
+            urlPrefix: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/\(satellite)/default/default/GoogleMapsCompatible_Level7",
+            urlSuffix: ".png",
+            swapsXY: true
+        )
     }
 
     private func tileLayer() async -> TileLayer? {
@@ -410,9 +442,11 @@ struct RadarMapRenderer {
 
     private func draw(
         tiles: [(tile: TileCoordinate, image: NSImage)],
+        cloudTiles: [(tile: TileCoordinate, image: NSImage)],
         warnings: [StormWarning],
         cells: [StormCell],
         zoom: Int,
+        cloudZoom: Int,
         over snapshot: MKMapSnapshotter.Snapshot
     ) -> NSImage {
         let mapImage = snapshot.image
@@ -456,6 +490,22 @@ struct RadarMapRenderer {
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
         mapImage.draw(in: NSRect(origin: .zero, size: imageSize))
+        let imageBounds = NSRect(origin: .zero, size: imageSize)
+
+        // Semi-transparent satellite imagery under the radar, so cloud cover
+        // shows on dry days without hiding the map.
+        for (tile, image) in cloudTiles {
+            let northWest = toImagePoint(Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: cloudZoom))
+            let southEast = toImagePoint(Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: cloudZoom))
+            let rect = NSRect(
+                x: min(northWest.x, southEast.x),
+                y: min(northWest.y, southEast.y),
+                width: abs(southEast.x - northWest.x),
+                height: abs(southEast.y - northWest.y)
+            )
+            guard rect.intersects(imageBounds) else { continue }
+            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.5)
+        }
 
         // Composite the tiles into their own layer so close zooms can be
         // smoothed before blending onto the map.
@@ -488,7 +538,6 @@ struct RadarMapRenderer {
 
         // Arrows showing where tracked storm cells are heading, from the
         // radar's own cell-motion vectors.
-        let imageBounds = NSRect(origin: .zero, size: imageSize)
         for cell in cells {
             let origin = toImagePoint(cell.coordinate)
             guard imageBounds.contains(origin), cell.isMoving else { continue }

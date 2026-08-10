@@ -38,6 +38,7 @@ enum RadarEntryCache {
             configuration.zoom.rawValue,
             configuration.mapStyle.rawValue,
             configuration.radarSource.rawValue,
+            configuration.showsCloudCover ? "clouds" : "no-clouds",
             "\(Int(displaySize.width))x\(Int(displaySize.height))",
         ]
         let digest = SHA256.hash(data: Data(components.joined(separator: "|").utf8))

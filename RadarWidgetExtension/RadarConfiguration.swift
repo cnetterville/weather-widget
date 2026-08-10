@@ -102,6 +102,9 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
     @Parameter(title: "Radar Source", default: .nexrad)
     var radarSource: RadarSource
 
+    @Parameter(title: "Show Cloud Cover", default: true)
+    var showsCloudCover: Bool
+
     /// Hide the typed-location field while following the Mac's location;
     /// the widget caption shows the detected city instead.
     static var parameterSummary: some ParameterSummary {
@@ -111,6 +114,7 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
                 \.$zoom
                 \.$mapStyle
                 \.$radarSource
+                \.$showsCloudCover
             }
         } otherwise: {
             Summary {
@@ -119,6 +123,7 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
                 \.$zoom
                 \.$mapStyle
                 \.$radarSource
+                \.$showsCloudCover
             }
         }
     }
