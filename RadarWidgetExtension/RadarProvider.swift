@@ -141,11 +141,16 @@ struct RadarProvider: AppIntentTimelineProvider {
         guard configuration.useCurrentLocation else {
             return try await geocode(query)
         }
-        guard let location = await Self.currentLocation() else {
-            throw RadarRenderError.currentLocationUnavailable
+        if let location = await Self.currentLocation() {
+            let name = await reverseGeocodedName(for: location) ?? "Current Location"
+            return (location.coordinate, name)
         }
-        let name = await reverseGeocodedName(for: location) ?? "Current Location"
-        return (location.coordinate, name)
+        // Location access can lapse (for example when the app bundle moves);
+        // a radar for the typed location beats an error screen.
+        if !query.isEmpty, let fallback = try? await geocode(query) {
+            return fallback
+        }
+        throw RadarRenderError.currentLocationUnavailable
     }
 
     /// The system's cached location, available while the widget is considered
