@@ -210,13 +210,15 @@ struct RadarMapRenderer {
     private func tileLayer() async -> TileLayer? {
         switch radarSource {
         case .nexrad:
-            // IEM's base-reflectivity US composite, regenerated about every
-            // 5 minutes. Real detail well past zoom 7.
+            // IEM's MRMS Hybrid Scan Reflectivity mosaic (q2-hsr): a
+            // quality-controlled US composite that suppresses ground clutter
+            // and anomalous propagation, unlike the raw base-reflectivity
+            // (n0q) product. Regenerated about every 2 minutes.
             return TileLayer(
                 time: await Self.nexradTimestamp(),
                 tileSize: 256,
                 zoomRange: 2...12,
-                urlPrefix: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/nexrad-n0q-900913",
+                urlPrefix: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/q2-hsr-900913",
                 urlSuffix: ".png"
             )
         case .worldwide:
@@ -241,8 +243,10 @@ struct RadarMapRenderer {
         let services: [Service]
     }
 
-    /// The generation time of the current IEM composite, from its
-    /// tile-service index. Purely informational — the overlay works without it.
+    /// Approximate generation time of the current IEM radar composite, taken
+    /// from the n0q tile-service index (the MRMS mosaic isn't listed there, but
+    /// both regenerate on the same pipeline within a couple of minutes).
+    /// Purely informational — the overlay works without it.
     private static func nexradTimestamp() async -> Date? {
         let url = URL(string: "https://mesonet.agron.iastate.edu/json/tms.json")!
         guard let (data, _) = try? await RadarNetwork.session.data(from: url),
