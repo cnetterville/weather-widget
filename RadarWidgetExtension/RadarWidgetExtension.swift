@@ -83,6 +83,9 @@ struct RadarWidgetEntryView: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.9))
             }
+            if !entry.hourlyRain.isEmpty {
+                hourlyRainStrip
+            }
             if let radarTime = entry.radarTime {
                 Text("Radar as of \(radarTime, style: .time)")
                     .font(.caption2)
@@ -96,6 +99,25 @@ struct RadarWidgetEntryView: View {
         // A light translucent tint rather than a material: widget snapshots
         // render materials as nearly opaque, hiding radar under the caption.
         .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    /// A tiny bar chart of the next few hours' precipitation chance, so you can
+    /// see at a glance whether rain is imminent.
+    private var hourlyRainStrip: some View {
+        let hours = Array(entry.hourlyRain.prefix(6))
+        return VStack(alignment: .leading, spacing: 2) {
+            Text("Rain next \(hours.count) hrs")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.7))
+            HStack(alignment: .bottom, spacing: 3) {
+                ForEach(Array(hours.enumerated()), id: \.offset) { _, chance in
+                    RoundedRectangle(cornerRadius: 1)
+                        .fill(Color.cyan.opacity(0.35 + Double(chance) / 100 * 0.6))
+                        .frame(width: 5, height: max(2, CGFloat(chance) / 100 * 16))
+                }
+            }
+            .frame(height: 16, alignment: .bottom)
+        }
     }
 
     private func warningBadge(_ title: String) -> some View {

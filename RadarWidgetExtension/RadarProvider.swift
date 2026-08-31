@@ -15,6 +15,7 @@ struct RadarEntry: TimelineEntry {
     let image: NSImage?
     let radarTime: Date?
     let rainChance: Int?
+    let hourlyRain: [Int]
     let warningTitle: String?
     let warningCode: String?
     let errorMessage: String?
@@ -26,6 +27,7 @@ struct RadarEntry: TimelineEntry {
             image: nil,
             radarTime: nil,
             rainChance: nil,
+            hourlyRain: [],
             warningTitle: nil,
             warningCode: nil,
             errorMessage: nil
@@ -67,16 +69,17 @@ struct RadarProvider: AppIntentTimelineProvider {
                 // Render at 2x the widget's point size so the map stays sharp.
                 size: CGSize(width: context.displaySize.width * 2, height: context.displaySize.height * 2)
             )
-            async let rainChanceTask = RainForecast.chanceOfRainToday(at: place.coordinate)
+            async let outlookTask = RainForecast.outlook(at: place.coordinate)
             let result = try await renderer.render()
-            let rainChance = await rainChanceTask
+            let outlook = await outlookTask
             RadarEntryCache.save(
                 image: result.image,
                 metadata: RadarEntryCache.Metadata(
                     savedAt: .now,
                     radarTime: result.radarTime,
                     locationName: place.name,
-                    rainChance: rainChance,
+                    rainChance: outlook.todayMax,
+                    hourlyRain: outlook.next6Hours,
                     warningTitle: result.topWarning?.eventName,
                     warningCode: result.topWarning?.phenomena
                 ),
@@ -87,7 +90,8 @@ struct RadarProvider: AppIntentTimelineProvider {
                 locationName: place.name,
                 image: result.image,
                 radarTime: result.radarTime,
-                rainChance: rainChance,
+                rainChance: outlook.todayMax,
+                hourlyRain: outlook.next6Hours,
                 warningTitle: result.topWarning?.eventName,
                 warningCode: result.topWarning?.phenomena,
                 errorMessage: nil
@@ -101,6 +105,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     image: cached.image,
                     radarTime: cached.metadata.radarTime,
                     rainChance: cached.metadata.rainChance,
+                    hourlyRain: cached.metadata.hourlyRain ?? [],
                     warningTitle: cached.metadata.warningTitle,
                     warningCode: cached.metadata.warningCode,
                     errorMessage: nil
@@ -128,6 +133,7 @@ struct RadarProvider: AppIntentTimelineProvider {
             image: nil,
             radarTime: nil,
             rainChance: nil,
+            hourlyRain: [],
             warningTitle: nil,
             warningCode: nil,
             errorMessage: message

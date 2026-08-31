@@ -75,6 +75,10 @@ struct RadarMapRenderer {
         let snapshot = try await takeSnapshot()
         async let warningsTask = StormWarningFeed.activeWarnings()
         async let cellsTask = StormCellFeed.activeCells()
+        async let cyclonesTask = TropicalCycloneFeed.activeCyclones(
+            near: region.center,
+            spanDegrees: region.span.latitudeDelta
+        )
 
         // Radar being briefly unreachable shouldn't blank the widget; with no
         // layer or tiles, draw() still produces the map with the location dot.
@@ -95,12 +99,14 @@ struct RadarMapRenderer {
 
         let visibleWarnings = visible(warnings: await warningsTask)
         let visibleCells = visible(cells: await cellsTask)
+        let visibleCyclones = visible(cyclones: await cyclonesTask)
 
         let composited = draw(
             tiles: tiles,
             cloudTiles: cloudTiles,
             warnings: visibleWarnings,
             cells: visibleCells,
+            cyclones: visibleCyclones,
             zoom: zoom,
             cloudZoom: cloudZoom,
             over: snapshot
@@ -148,6 +154,21 @@ struct RadarMapRenderer {
             .map { $0 }
     }
 
+    /// Cyclones whose forecast cone overlaps the rendered area (same margin
+    /// used for tile coverage).
+    private func visible(cyclones: [TropicalCyclone]) -> [TropicalCyclone] {
+        let center = region.center
+        let span = region.span
+        return cyclones.filter {
+            $0.intersects(
+                minLatitude: center.latitude - span.latitudeDelta * 0.7,
+                maxLatitude: center.latitude + span.latitudeDelta * 0.7,
+                minLongitude: center.longitude - span.longitudeDelta * 0.7,
+                maxLongitude: center.longitude + span.longitudeDelta * 0.7
+            )
+        }
+    }
+
     // MARK: - Map snapshot
 
     /// The requested region. The snapshotter may fit this to the image aspect
@@ -167,6 +188,11 @@ struct RadarMapRenderer {
         options.region = region
         options.size = size
         options.preferredConfiguration = mapStyle.mapConfiguration
+        // After sunset, render the vector map dark so it reads as night and the
+        // radar stands out. Satellite imagery is unaffected by appearance.
+        if mapStyle != .satellite, SolarTime.isNight(at: coordinate) {
+            options.appearance = NSAppearance(named: .darkAqua)
+        }
         return try await MKMapSnapshotter(options: options).start()
     }
 
@@ -444,11 +470,33 @@ struct RadarMapRenderer {
         return NSImage(cgImage: result, size: bitmap.size)
     }
 
+    /// Draws centered white text with a dark halo, nudged to stay on-screen.
+    private func drawLabel(_ text: String, at point: NSPoint, imageBounds: NSRect) {
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        let shadow = NSShadow()
+        shadow.shadowColor = .black
+        shadow.shadowBlurRadius = 3
+        shadow.shadowOffset = .zero
+        let string = NSAttributedString(string: text, attributes: [
+            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .foregroundColor: NSColor.white,
+            .paragraphStyle: paragraph,
+            .shadow: shadow,
+        ])
+        let size = string.size()
+        var origin = NSPoint(x: point.x - size.width / 2, y: point.y - size.height)
+        origin.x = min(max(origin.x, 4), imageBounds.maxX - size.width - 4)
+        origin.y = min(max(origin.y, 4), imageBounds.maxY - size.height - 4)
+        string.draw(at: origin)
+    }
+
     private func draw(
         tiles: [(tile: TileCoordinate, image: NSImage)],
         cloudTiles: [(tile: TileCoordinate, image: NSImage)],
         warnings: [StormWarning],
         cells: [StormCell],
+        cyclones: [TropicalCyclone],
         zoom: Int,
         cloudZoom: Int,
         over snapshot: MKMapSnapshotter.Snapshot
@@ -540,6 +588,42 @@ struct RadarMapRenderer {
             }
         }
 
+        // Hurricane forecast cones: a translucent white "cone of uncertainty"
+        // with a dashed edge, the colored forecast track through it, and a
+        // marker at the current center. Drawn over radar but under the local
+        // cell markers so nearby storm detail stays legible.
+        for cyclone in cyclones {
+            for ring in cyclone.coneRings where ring.count > 2 {
+                let path = NSBezierPath()
+                path.move(to: toImagePoint(ring[0]))
+                for coordinate in ring.dropFirst() {
+                    path.line(to: toImagePoint(coordinate))
+                }
+                path.close()
+                NSColor.white.withAlphaComponent(0.16).setFill()
+                path.fill()
+                NSColor.white.withAlphaComponent(0.8).setStroke()
+                path.lineWidth = 2
+                path.setLineDash([6, 4], count: 2, phase: 0)
+                path.stroke()
+            }
+
+            let trackPoints = cyclone.track.map(toImagePoint)
+            if trackPoints.count > 1 {
+                let line = NSBezierPath()
+                line.move(to: trackPoints[0])
+                for point in trackPoints.dropFirst() {
+                    line.line(to: point)
+                }
+                NSColor.black.withAlphaComponent(0.5).setStroke()
+                line.lineWidth = 5
+                line.stroke()
+                cyclone.color.setStroke()
+                line.lineWidth = 2.5
+                line.stroke()
+            }
+        }
+
         // Arrows showing where tracked storm cells are heading, from the
         // radar's own cell-motion vectors.
         for cell in cells {
@@ -621,6 +705,44 @@ struct RadarMapRenderer {
                 diamond.lineWidth = 1.5
                 diamond.stroke()
             }
+        }
+
+        // Mark each cyclone's current center with a hurricane glyph and label.
+        for cyclone in cyclones {
+            let center = toImagePoint(cyclone.center)
+            guard imageBounds.contains(center) else { continue }
+
+            let configuration = NSImage.SymbolConfiguration(pointSize: 24, weight: .bold)
+                .applying(NSImage.SymbolConfiguration(paletteColors: [cyclone.color]))
+            if let glyph = NSImage(systemSymbolName: "hurricane", accessibilityDescription: nil)?
+                .withSymbolConfiguration(configuration) {
+                let size = glyph.size
+                let dark = NSBezierPath(ovalIn: NSRect(
+                    x: center.x - size.width / 2 - 3,
+                    y: center.y - size.height / 2 - 3,
+                    width: size.width + 6,
+                    height: size.height + 6
+                ))
+                NSColor.black.withAlphaComponent(0.45).setFill()
+                dark.fill()
+                glyph.draw(
+                    in: NSRect(
+                        x: center.x - size.width / 2,
+                        y: center.y - size.height / 2,
+                        width: size.width,
+                        height: size.height
+                    ),
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: 1
+                )
+            }
+
+            drawLabel(
+                "\(cyclone.name) · \(cyclone.summary)",
+                at: NSPoint(x: center.x, y: center.y - 20),
+                imageBounds: imageBounds
+            )
         }
 
         // Mark the configured location with a small white-ringed blue dot.
