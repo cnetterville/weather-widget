@@ -7,6 +7,32 @@ import AppKit
 import CoreLocation
 import Foundation
 
+/// A coastal tropical watch/warning segment: TWA/TWR (tropical storm watch/
+/// warning) or HWA/HWR (hurricane watch/warning) along a stretch of coastline.
+struct TropicalWatchWarning {
+    let code: String
+    let points: [CLLocationCoordinate2D]
+
+    /// Standard NHC display colors: hurricane warning red, hurricane watch
+    /// pink, tropical storm warning blue, tropical storm watch yellow.
+    var color: NSColor {
+        switch code {
+        case "HWR": .systemRed
+        case "HWA": .systemPink
+        case "TWR": .systemBlue
+        case "TWA": .systemYellow
+        default: .systemOrange
+        }
+    }
+}
+
+/// A line of equal forecast arrival time for tropical-storm-force winds.
+struct ArrivalIsochrone {
+    /// Human-readable arrival time from NHC, like "Sat 2 am".
+    let label: String
+    let points: [CLLocationCoordinate2D]
+}
+
 /// An active tropical cyclone from the National Hurricane Center: its current
 /// center plus the official forecast track and error cone.
 struct TropicalCyclone {
@@ -22,6 +48,33 @@ struct TropicalCyclone {
     let coneRings: [[CLLocationCoordinate2D]]
     /// Ordered forecast track points (current position forward).
     let track: [CLLocationCoordinate2D]
+    /// Coastal watch/warning segments in effect for this storm.
+    let watchWarnings: [TropicalWatchWarning]
+    /// "Most likely arrival time of tropical-storm-force winds" isochrones.
+    let arrivalIsochrones: [ArrivalIsochrone]
+
+    /// The most likely arrival time of tropical-storm-force winds at a
+    /// location, taken from the nearest isochrone when one passes close by.
+    /// Returns nil when the location isn't meaningfully in the storm's path.
+    func windArrival(at location: CLLocationCoordinate2D) -> String? {
+        var nearest: (label: String, degrees: Double)?
+        for isochrone in arrivalIsochrones {
+            for point in isochrone.points {
+                // Flat-earth approximation is fine at this scale.
+                let dLatitude = point.latitude - location.latitude
+                let dLongitude = (point.longitude - location.longitude)
+                    * cos(location.latitude * .pi / 180)
+                let degrees = (dLatitude * dLatitude + dLongitude * dLongitude).squareRoot()
+                if nearest == nil || degrees < nearest!.degrees {
+                    nearest = (isochrone.label, degrees)
+                }
+            }
+        }
+        // Isochrones are ~6 hours apart; within about 1 degree (~70 mi) the
+        // nearest line is a fair estimate for "when winds reach here".
+        guard let nearest, nearest.degrees < 1.0 else { return nil }
+        return nearest.label
+    }
 
     /// A short label such as "Cat 3 Hurricane" or "Tropical Storm".
     var summary: String {
@@ -82,9 +135,17 @@ enum TropicalCycloneFeed {
         "EP1": 138, "EP2": 164, "EP3": 190, "EP4": 216, "EP5": 242,
         "CP1": 268, "CP2": 294, "CP3": 320, "CP4": 346, "CP5": 372,
     ]
-    /// The forecast-track layer sits one id below the matching cone layer.
+    /// Related layers sit at fixed offsets from the cone: the forecast track
+    /// one id below, coastal watches/warnings one above, and the "most likely
+    /// arrival time of TS winds" isochrones twelve above.
     private static func trackLayer(for bin: String) -> Int? {
         coneLayer[bin].map { $0 - 1 }
+    }
+    private static func watchWarningLayer(for bin: String) -> Int? {
+        coneLayer[bin].map { $0 + 1 }
+    }
+    private static func arrivalLayer(for bin: String) -> Int? {
+        coneLayer[bin].map { $0 + 12 }
     }
 
     private static let mapServer =
@@ -134,9 +195,11 @@ enum TropicalCycloneFeed {
                     continue
                 }
                 group.addTask {
-                    async let coneRings = geometry(layer: coneID, name: storm.name)
-                    async let track = geometry(layer: trackLayer(for: bin) ?? -1, name: storm.name)
-                    let rings = await coneRings
+                    async let coneFeatures = features(layer: coneID)
+                    async let trackFeatures = features(layer: trackLayer(for: bin) ?? -1)
+                    async let watchFeatures = features(layer: watchWarningLayer(for: bin) ?? -1)
+                    async let arrivalFeatures = features(layer: arrivalLayer(for: bin) ?? -1)
+                    let rings = await coneFeatures.flatMap(\.rings)
                     guard !rings.isEmpty else { return nil }
                     return TropicalCyclone(
                         name: storm.name ?? "Tropical Cyclone",
@@ -144,7 +207,21 @@ enum TropicalCycloneFeed {
                         intensityKnots: Int(storm.intensity ?? "") ?? 0,
                         center: CLLocationCoordinate2D(latitude: latitude, longitude: longitude),
                         coneRings: rings,
-                        track: (await track).first ?? []
+                        track: (await trackFeatures).flatMap(\.rings).first ?? [],
+                        watchWarnings: (await watchFeatures).flatMap { feature in
+                            feature.rings.compactMap { ring in
+                                feature.watchWarningCode.map {
+                                    TropicalWatchWarning(code: $0, points: ring)
+                                }
+                            }
+                        },
+                        arrivalIsochrones: (await arrivalFeatures).flatMap { feature in
+                            feature.rings.compactMap { ring in
+                                feature.arrivalTime.map {
+                                    ArrivalIsochrone(label: $0, points: ring)
+                                }
+                            }
+                        }
                     )
                 }
             }
@@ -160,9 +237,21 @@ enum TropicalCycloneFeed {
 
     private struct FeatureCollection: Decodable {
         struct Feature: Decodable {
+            struct Properties: Decodable {
+                let tcww: String?
+                let arrival_time: String?
+            }
+            let properties: Properties?
             let geometry: Geometry?
         }
         let features: [Feature]
+    }
+
+    /// One returned feature: its geometry plus the fields the overlay uses.
+    struct LayerFeature {
+        let rings: [[CLLocationCoordinate2D]]
+        let watchWarningCode: String?
+        let arrivalTime: String?
     }
 
     /// Flattens Polygon/MultiPolygon/LineString/MultiLineString into coordinate
@@ -203,13 +292,14 @@ enum TropicalCycloneFeed {
         }
     }
 
-    /// Queries one MapServer layer for the named storm's geometry as GeoJSON.
-    private static func geometry(layer: Int, name: String?) async -> [[CLLocationCoordinate2D]] {
+    /// Queries one MapServer layer for its features as GeoJSON.
+    private static func features(layer: Int) async -> [LayerFeature] {
         guard layer >= 0 else { return [] }
         var components = URLComponents(string: "\(mapServer)/\(layer)/query")!
         components.queryItems = [
             URLQueryItem(name: "where", value: "1=1"),
-            URLQueryItem(name: "outFields", value: "stormname"),
+            // "*" because field lists vary by layer and unknown names error out.
+            URLQueryItem(name: "outFields", value: "*"),
             URLQueryItem(name: "outSR", value: "4326"),
             URLQueryItem(name: "returnGeometry", value: "true"),
             URLQueryItem(name: "f", value: "geojson"),
@@ -220,6 +310,13 @@ enum TropicalCycloneFeed {
         else {
             return []
         }
-        return collection.features.compactMap { $0.geometry?.rings }.flatMap { $0 }
+        return collection.features.compactMap { feature in
+            guard let rings = feature.geometry?.rings, !rings.isEmpty else { return nil }
+            return LayerFeature(
+                rings: rings,
+                watchWarningCode: feature.properties?.tcww,
+                arrivalTime: feature.properties?.arrival_time
+            )
+        }
     }
 }

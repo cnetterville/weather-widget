@@ -69,6 +69,9 @@ struct RadarMapRenderer {
         let radarTime: Date?
         /// The most dangerous active warning visible in the rendered area.
         let topWarning: StormWarning?
+        /// NHC's most likely arrival time of tropical-storm-force winds at the
+        /// widget's location, like "Sat 2 am", when a storm is inbound.
+        let tropicalWindArrival: String?
     }
 
     func render() async throws -> Result {
@@ -97,6 +100,12 @@ struct RadarMapRenderer {
             cloudTiles = await fetchTileImages(tiles: tileRange(zoom: cloudZoom), zoom: cloudZoom, layer: clouds)
         }
 
+        // Snow overlay only applies to the US source's coverage area.
+        var snowImage: NSImage?
+        if radarSource == .nexrad {
+            snowImage = await snowOverlay()
+        }
+
         let visibleWarnings = visible(warnings: await warningsTask)
         let visibleCells = visible(cells: await cellsTask)
         let visibleCyclones = visible(cyclones: await cyclonesTask)
@@ -104,6 +113,7 @@ struct RadarMapRenderer {
         let composited = draw(
             tiles: tiles,
             cloudTiles: cloudTiles,
+            snowImage: snowImage,
             warnings: visibleWarnings,
             cells: visibleCells,
             cyclones: visibleCyclones,
@@ -115,7 +125,15 @@ struct RadarMapRenderer {
         let topWarning = StormWarning.priority
             .compactMap { code in visibleWarnings.first { $0.phenomena == code } }
             .first
-        return Result(image: composited, radarTime: radarTime, topWarning: topWarning)
+        let arrival = visibleCyclones
+            .compactMap { $0.windArrival(at: coordinate) }
+            .first
+        return Result(
+            image: composited,
+            radarTime: radarTime,
+            topWarning: topWarning,
+            tropicalWindArrival: arrival
+        )
     }
 
     /// Warnings that overlap the rendered area (with the same margin used
@@ -261,6 +279,111 @@ struct RadarMapRenderer {
         }
     }
 
+    // MARK: - Winter precipitation type
+
+    /// The geographic bounds the overlays cover: the requested region plus the
+    /// same margin used for tile coverage.
+    private var coverageBounds: (
+        minLatitude: Double, maxLatitude: Double,
+        minLongitude: Double, maxLongitude: Double
+    ) {
+        let center = region.center
+        let span = region.span
+        return (
+            max(center.latitude - span.latitudeDelta * 0.7, -85),
+            min(center.latitude + span.latitudeDelta * 0.7, 85),
+            center.longitude - span.longitudeDelta * 0.7,
+            center.longitude + span.longitudeDelta * 0.7
+        )
+    }
+
+    /// MRMS surface precipitation type from the NWS map server, reduced to just
+    /// the snow category and recolored pale blue-white, so frozen precipitation
+    /// reads differently from rain. Nil outside CONUS, on any failure, or —
+    /// most of the year — when nothing in view is snow.
+    private func snowOverlay() async -> NSImage? {
+        let bounds = coverageBounds
+        // The product covers CONUS only; skip the fetch entirely elsewhere.
+        guard bounds.maxLatitude > 21, bounds.minLatitude < 53,
+              bounds.maxLongitude > -128, bounds.minLongitude < -65
+        else { return nil }
+
+        // Web Mercator meters, matching both the WMS request and the snapshot.
+        func mercator(_ latitude: Double, _ longitude: Double) -> (x: Double, y: Double) {
+            let r = 20_037_508.342789244
+            let x = longitude * r / 180
+            let y = log(tan((90 + latitude) * .pi / 360)) / .pi * r
+            return (x, y)
+        }
+        let southWest = mercator(bounds.minLatitude, bounds.minLongitude)
+        let northEast = mercator(bounds.maxLatitude, bounds.maxLongitude)
+
+        // Half the snapshot resolution is still finer than the ~1 km data grid.
+        let width = Int(size.width / 2)
+        let height = Int(size.height / 2)
+        var components = URLComponents(
+            string: "https://opengeo.ncep.noaa.gov/geoserver/conus/conus_pcpn_typ/ows"
+        )!
+        components.queryItems = [
+            URLQueryItem(name: "service", value: "WMS"),
+            URLQueryItem(name: "version", value: "1.3.0"),
+            URLQueryItem(name: "request", value: "GetMap"),
+            URLQueryItem(name: "layers", value: "conus_pcpn_typ"),
+            URLQueryItem(name: "crs", value: "EPSG:3857"),
+            URLQueryItem(
+                name: "bbox",
+                value: "\(southWest.x),\(southWest.y),\(northEast.x),\(northEast.y)"
+            ),
+            URLQueryItem(name: "width", value: "\(width)"),
+            URLQueryItem(name: "height", value: "\(height)"),
+            URLQueryItem(name: "format", value: "image/png"),
+            URLQueryItem(name: "transparent", value: "true"),
+        ]
+        guard let url = components.url,
+              let (data, response) = try? await RadarNetwork.session.data(from: url),
+              (response as? HTTPURLResponse)?.statusCode == 200,
+              let image = NSImage(data: data)
+        else { return nil }
+        return Self.snowPixels(in: image)
+    }
+
+    /// Keeps only the snow category of the MRMS precipitation-type palette
+    /// (a fixed gray, rendered without antialiasing) and recolors it. Returns
+    /// nil when the image contains no snow at all.
+    private static func snowPixels(in image: NSImage) -> NSImage? {
+        guard let tiff = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiff),
+              let data = bitmap.bitmapData,
+              bitmap.samplesPerPixel == 4, bitmap.bitsPerSample == 8
+        else { return nil }
+        var snowPixelCount = 0
+        for row in 0..<bitmap.pixelsHigh {
+            let rowStart = row * bitmap.bytesPerRow
+            for column in 0..<bitmap.pixelsWide {
+                let offset = rowStart + column * 4
+                let red = data[offset], green = data[offset + 1], blue = data[offset + 2]
+                let alpha = data[offset + 3]
+                // Snow in this palette is exactly (200, 200, 200); allow a
+                // little tolerance for PNG round-trips.
+                if alpha > 0,
+                   (197...203).contains(red), (197...203).contains(green),
+                   (197...203).contains(blue) {
+                    data[offset] = 235
+                    data[offset + 1] = 245
+                    data[offset + 2] = 255
+                    data[offset + 3] = 255
+                    snowPixelCount += 1
+                } else {
+                    data[offset + 3] = 0
+                }
+            }
+        }
+        guard snowPixelCount > 0 else { return nil }
+        let result = NSImage(size: image.size)
+        result.addRepresentation(bitmap)
+        return result
+    }
+
     private struct TileServices: Decodable {
         struct Service: Decodable {
             let id: String
@@ -269,11 +392,39 @@ struct RadarMapRenderer {
         let services: [Service]
     }
 
-    /// Approximate generation time of the current IEM radar composite, taken
-    /// from the n0q tile-service index (the MRMS mosaic isn't listed there, but
-    /// both regenerate on the same pipeline within a couple of minutes).
-    /// Purely informational — the overlay works without it.
+    /// Generation time of the current MRMS mosaic. The exact product time comes
+    /// from NCEP's SeamlessHSR directory listing (the newest file is the frame
+    /// IEM tiles are built from); if that's unreachable, fall back to IEM's n0q
+    /// index, which regenerates on the same pipeline within a couple of
+    /// minutes. Purely informational — the overlay works without it.
     private static func nexradTimestamp() async -> Date? {
+        if let exact = await mrmsProductTime() {
+            return exact
+        }
+        return await n0qCompositeTime()
+    }
+
+    private static func mrmsProductTime() async -> Date? {
+        let url = URL(string: "https://mrms.ncep.noaa.gov/2D/SeamlessHSR/?C=M;O=D")!
+        guard let (data, _) = try? await RadarNetwork.session.data(from: url),
+              let listing = String(data: data, encoding: .utf8)
+        else {
+            return nil
+        }
+        // File names look like SeamlessHSR_00.00_20260904-231600; the largest
+        // stamp is the newest product regardless of listing order.
+        let pattern = /SeamlessHSR_00\.00_(\d{8})-(\d{6})/
+        guard let newest = listing.matches(of: pattern).map({ "\($0.1)\($0.2)" }).max()
+        else {
+            return nil
+        }
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMddHHmmss"
+        formatter.timeZone = TimeZone(identifier: "UTC")
+        return formatter.date(from: newest)
+    }
+
+    private static func n0qCompositeTime() async -> Date? {
         let url = URL(string: "https://mesonet.agron.iastate.edu/json/tms.json")!
         guard let (data, _) = try? await RadarNetwork.session.data(from: url),
               let index = try? JSONDecoder().decode(TileServices.self, from: data),
@@ -494,6 +645,7 @@ struct RadarMapRenderer {
     private func draw(
         tiles: [(tile: TileCoordinate, image: NSImage)],
         cloudTiles: [(tile: TileCoordinate, image: NSImage)],
+        snowImage: NSImage?,
         warnings: [StormWarning],
         cells: [StormCell],
         cyclones: [TropicalCyclone],
@@ -570,6 +722,26 @@ struct RadarMapRenderer {
             )
         }
 
+        // Where MRMS flags the precipitation as snow, tint it pale blue-white
+        // over the reflectivity so winter precipitation reads at a glance.
+        // Semi-transparent so intensity still shows through.
+        if let snowImage {
+            let bounds = coverageBounds
+            let northWest = toImagePoint(CLLocationCoordinate2D(
+                latitude: bounds.maxLatitude, longitude: bounds.minLongitude
+            ))
+            let southEast = toImagePoint(CLLocationCoordinate2D(
+                latitude: bounds.minLatitude, longitude: bounds.maxLongitude
+            ))
+            let rect = NSRect(
+                x: min(northWest.x, southEast.x),
+                y: min(northWest.y, southEast.y),
+                width: abs(southEast.x - northWest.x),
+                height: abs(southEast.y - northWest.y)
+            )
+            snowImage.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.7)
+        }
+
         // Outline active warning polygons, least dangerous first so the most
         // dangerous draw on top.
         for code in StormWarning.priority.reversed() {
@@ -620,6 +792,23 @@ struct RadarMapRenderer {
                 line.stroke()
                 cyclone.color.setStroke()
                 line.lineWidth = 2.5
+                line.stroke()
+            }
+
+            // Coastal watch/warning segments in NHC's standard colors, thick
+            // enough to read as highlighted coastline.
+            for segment in cyclone.watchWarnings where segment.points.count > 1 {
+                let line = NSBezierPath()
+                line.lineCapStyle = .round
+                line.move(to: toImagePoint(segment.points[0]))
+                for coordinate in segment.points.dropFirst() {
+                    line.line(to: toImagePoint(coordinate))
+                }
+                NSColor.black.withAlphaComponent(0.5).setStroke()
+                line.lineWidth = 8
+                line.stroke()
+                segment.color.setStroke()
+                line.lineWidth = 5
                 line.stroke()
             }
         }

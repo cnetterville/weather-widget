@@ -16,6 +16,7 @@ struct RadarEntry: TimelineEntry {
     let radarTime: Date?
     let rainChance: Int?
     let hourlyRain: [Int]
+    let tropicalWindArrival: String?
     let warningTitle: String?
     let warningCode: String?
     let errorMessage: String?
@@ -28,6 +29,7 @@ struct RadarEntry: TimelineEntry {
             radarTime: nil,
             rainChance: nil,
             hourlyRain: [],
+            tropicalWindArrival: nil,
             warningTitle: nil,
             warningCode: nil,
             errorMessage: nil
@@ -80,6 +82,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     locationName: place.name,
                     rainChance: outlook.todayMax,
                     hourlyRain: outlook.next6Hours,
+                    tropicalWindArrival: result.tropicalWindArrival,
                     warningTitle: result.topWarning?.eventName,
                     warningCode: result.topWarning?.phenomena
                 ),
@@ -92,6 +95,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                 radarTime: result.radarTime,
                 rainChance: outlook.todayMax,
                 hourlyRain: outlook.next6Hours,
+                tropicalWindArrival: result.tropicalWindArrival,
                 warningTitle: result.topWarning?.eventName,
                 warningCode: result.topWarning?.phenomena,
                 errorMessage: nil
@@ -106,6 +110,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     radarTime: cached.metadata.radarTime,
                     rainChance: cached.metadata.rainChance,
                     hourlyRain: cached.metadata.hourlyRain ?? [],
+                    tropicalWindArrival: cached.metadata.tropicalWindArrival,
                     warningTitle: cached.metadata.warningTitle,
                     warningCode: cached.metadata.warningCode,
                     errorMessage: nil
@@ -134,6 +139,7 @@ struct RadarProvider: AppIntentTimelineProvider {
             radarTime: nil,
             rainChance: nil,
             hourlyRain: [],
+            tropicalWindArrival: nil,
             warningTitle: nil,
             warningCode: nil,
             errorMessage: message

@@ -15,8 +15,9 @@ enum RadarEntryCache {
         let radarTime: Date?
         let locationName: String
         let rainChance: Int?
-        // Optional so renders cached before this field existed still decode.
+        // Newer fields are optional so older cached renders still decode.
         var hourlyRain: [Int]?
+        var tropicalWindArrival: String?
         let warningTitle: String?
         let warningCode: String?
     }

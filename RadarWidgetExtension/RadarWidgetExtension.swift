@@ -83,7 +83,13 @@ struct RadarWidgetEntryView: View {
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.9))
             }
-            if !entry.hourlyRain.isEmpty {
+            if let arrival = entry.tropicalWindArrival {
+                Label("Tropical storm winds ~\(arrival)", systemImage: "wind")
+                    .font(.caption.bold())
+                    .foregroundStyle(.orange)
+            }
+            // Only worth the space when rain is actually plausible soon.
+            if entry.hourlyRain.max() ?? 0 >= 10 {
                 hourlyRainStrip
             }
             if let radarTime = entry.radarTime {
