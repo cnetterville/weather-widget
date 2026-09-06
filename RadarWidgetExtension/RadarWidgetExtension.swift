@@ -111,6 +111,9 @@ struct RadarWidgetEntryView: View {
     /// see at a glance whether rain is imminent.
     private var hourlyRainStrip: some View {
         let hours = Array(entry.hourlyRain.prefix(6))
+        // Size the chart to the tallest bar so low chances don't leave a big
+        // empty gap between this strip and the radar timestamp below it.
+        let chartHeight = max(2, CGFloat(hours.max() ?? 0) / 100 * 16)
         return VStack(alignment: .leading, spacing: 2) {
             Text("Rain next \(hours.count) hrs")
                 .font(.caption2)
@@ -122,7 +125,7 @@ struct RadarWidgetEntryView: View {
                         .frame(width: 5, height: max(2, CGFloat(chance) / 100 * 16))
                 }
             }
-            .frame(height: 16, alignment: .bottom)
+            .frame(height: chartHeight, alignment: .bottom)
         }
     }
 
