@@ -2,6 +2,9 @@
 
 A macOS desktop widget that shows a live weather radar map for your location, with severe weather warnings, hurricane forecast cones, and an hourly rain outlook — all rendered as a WidgetKit widget you can pin to your desktop or Notification Center.
 
+<img src="docs/widget-screenshot.png" alt="Weather Widget showing the radar map over Houston, TX with rain chance and radar timestamp" width="360">
+
+
 ## Features
 
 - Live radar imagery over a map of your area, using the MRMS clutter-filtered US mosaic with a global fallback
