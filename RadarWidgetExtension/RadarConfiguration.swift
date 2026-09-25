@@ -87,6 +87,13 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
         IntentDescription("Choose the area shown on the radar map.")
     }
 
+    /// The location field's placeholder value. `@Parameter` needs the
+    /// default below as a literal, so this exists purely so other code
+    /// (see `RadarProvider.resolvePlace`) can tell "the person typed this
+    /// on purpose" apart from "they never touched this field" — keep it in
+    /// sync with the literal below if it ever changes.
+    static let defaultLocation = "New York, NY"
+
     @Parameter(title: "Use My Current Location", default: false)
     var useCurrentLocation: Bool
 

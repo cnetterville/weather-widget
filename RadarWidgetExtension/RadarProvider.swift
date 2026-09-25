@@ -157,9 +157,14 @@ struct RadarProvider: AppIntentTimelineProvider {
             let name = await reverseGeocodedName(for: location) ?? "Current Location"
             return (location.coordinate, name)
         }
-        // Location access can lapse (for example when the app bundle moves);
-        // a radar for the typed location beats an error screen.
-        if !query.isEmpty, let fallback = try? await geocode(query) {
+        // Location access can lapse (for example when the app bundle moves).
+        // Only fall back to the typed location if the person actually chose
+        // one — otherwise it's still sitting on the intent's placeholder
+        // ("New York, NY"), and silently rendering that would look exactly
+        // like "Use My Current Location" is being ignored rather than
+        // failing, which is much harder to diagnose.
+        if query != RadarConfigurationIntent.defaultLocation, !query.isEmpty,
+           let fallback = try? await geocode(query) {
             return fallback
         }
         throw RadarRenderError.currentLocationUnavailable
