@@ -170,12 +170,23 @@ struct RadarProvider: AppIntentTimelineProvider {
         throw RadarRenderError.currentLocationUnavailable
     }
 
-    /// The system's cached location, available while the widget is considered
-    /// "in use" and the person has extended location access to widgets.
+    /// Asks Core Location for a fix while the widget is considered "in use"
+    /// (shortly after it's visible, and only once the person has extended
+    /// the app's location access to widgets).
+    ///
+    /// Merely reading `manager.location` isn't enough: a widget runs in a
+    /// fresh extension process most of the time, and the cached value there
+    /// is usually `nil` until something actually requests a location. It's
+    /// still worth checking afterwards as a fallback, since the request may
+    /// have populated it even if the fresh fix didn't arrive within budget.
     @MainActor
-    private static func currentLocation() -> CLLocation? {
+    private static func currentLocation() async -> CLLocation? {
         let manager = CLLocationManager()
         guard manager.isAuthorizedForWidgetUpdates else { return nil }
+        let request = OneShotLocationRequest(manager: manager)
+        if let fresh = await request.location(timeout: .seconds(8)) {
+            return fresh
+        }
         return manager.location
     }
 
@@ -224,5 +235,51 @@ struct RadarProvider: AppIntentTimelineProvider {
             forKey: cacheKey
         )
         return (coordinate, name)
+    }
+}
+
+/// Wraps `CLLocationManager.requestLocation()` in a single awaitable call.
+/// A widget timeline has to return something within WidgetKit's budget, so
+/// the wait is capped; whichever of "fix arrived", "failed", or "timed out"
+/// happens first resumes the caller exactly once.
+@MainActor
+private final class OneShotLocationRequest: NSObject, CLLocationManagerDelegate {
+    private let manager: CLLocationManager
+    private var continuation: CheckedContinuation<CLLocation?, Never>?
+
+    init(manager: CLLocationManager) {
+        self.manager = manager
+        super.init()
+        // A radar map spans tens of kilometres; a coarse fix is plenty and
+        // arrives much faster than a precise one.
+        manager.desiredAccuracy = kCLLocationAccuracyKilometer
+        manager.delegate = self
+    }
+
+    func location(timeout: Duration) async -> CLLocation? {
+        let timeoutTask = Task { [weak self] in
+            try? await Task.sleep(for: timeout)
+            self?.finish(with: nil)
+        }
+        defer { timeoutTask.cancel() }
+        return await withCheckedContinuation { continuation in
+            self.continuation = continuation
+            manager.requestLocation()
+        }
+    }
+
+    private func finish(with location: CLLocation?) {
+        guard let continuation else { return }
+        self.continuation = nil
+        manager.stopUpdatingLocation()
+        continuation.resume(returning: location)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
+        finish(with: locations.last)
+    }
+
+    func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
+        finish(with: nil)
     }
 }

@@ -11,5 +11,7 @@
 	<true/>
 	<key>NSLocationUsageDescription</key>
 	<string>Your location is used to center the radar map on where you are.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>Your location is used to center the radar map on where you are.</string>
 </dict>
 </plist>
