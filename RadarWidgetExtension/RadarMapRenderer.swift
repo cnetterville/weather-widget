@@ -370,7 +370,7 @@ struct RadarMapRenderer {
     /// Keeps only the snow category of the MRMS precipitation-type palette
     /// (a fixed gray, rendered without antialiasing) and recolors it. Returns
     /// nil when the image contains no snow at all.
-    private static func snowPixels(in image: NSImage) -> NSImage? {
+    static func snowPixels(in image: NSImage) -> NSImage? {
         guard let tiff = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiff),
               let data = bitmap.bitmapData,
@@ -489,7 +489,7 @@ struct RadarMapRenderer {
         let y: Int
     }
 
-    private static func tileIndex(latitude: Double, longitude: Double, zoom: Int) -> (x: Int, y: Int) {
+    static func tileIndex(latitude: Double, longitude: Double, zoom: Int) -> (x: Int, y: Int) {
         let n = Double(1 << zoom)
         let x = Int(floor((longitude + 180) / 360 * n))
         let latitudeRadians = latitude * .pi / 180
@@ -497,7 +497,7 @@ struct RadarMapRenderer {
         return (x, y)
     }
 
-    private static func tileNorthWestCorner(x: Int, y: Int, zoom: Int) -> CLLocationCoordinate2D {
+    static func tileNorthWestCorner(x: Int, y: Int, zoom: Int) -> CLLocationCoordinate2D {
         let n = Double(1 << zoom)
         let longitude = Double(x) / n * 360 - 180
         let latitudeRadians = atan(sinh(.pi * (1 - 2 * Double(y) / n)))

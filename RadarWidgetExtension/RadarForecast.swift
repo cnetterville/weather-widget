@@ -47,9 +47,17 @@ enum RainForecast {
         ]
         guard let url = components.url,
               let (data, _) = try? await RadarNetwork.session.data(from: url),
-              let response = try? JSONDecoder().decode(Response.self, from: data)
+              let outlook = outlook(from: data)
         else {
             return RainOutlook(restOfTodayMax: nil, next6Hours: [], next6HoursStart: nil)
+        }
+        return outlook
+    }
+
+    /// Parses an Open-Meteo hourly forecast response.
+    static func outlook(from data: Data) -> RainOutlook? {
+        guard let response = try? JSONDecoder().decode(Response.self, from: data) else {
+            return nil
         }
         let hourly = response.hourly
         // Times are local to the location, so "today" is every hour sharing
@@ -60,7 +68,9 @@ enum RainForecast {
             .compactMap { _, chance in chance }
         return RainOutlook(
             restOfTodayMax: restOfToday.max(),
-            next6Hours: hourly.precipitation_probability.prefix(6).compactMap { $0 },
+            // A missing hour counts as 0% rather than being dropped, which
+            // would shift every later hour one bar early.
+            next6Hours: hourly.precipitation_probability.prefix(6).map { $0 ?? 0 },
             next6HoursStart: hourly.time.first.flatMap {
                 startDate(localTime: $0, utcOffsetSeconds: response.utc_offset_seconds)
             }

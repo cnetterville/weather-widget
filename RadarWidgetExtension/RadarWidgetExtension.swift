@@ -145,7 +145,7 @@ struct RadarWidgetEntryView: View {
             Label("TS winds ~\(arrival)", systemImage: "wind")
                 .font(.caption2.bold())
                 .foregroundStyle(.orange)
-        } else if let soon = rainSoon, soon.chance >= 30 {
+        } else if let soon = entry.rainSoon, soon.chance >= 30 {
             Label(soon.summary, systemImage: "cloud.rain.fill")
                 .font(.caption2)
                 .foregroundStyle(.white.opacity(0.9))
@@ -195,29 +195,6 @@ struct RadarWidgetEntryView: View {
         }
     }
 
-    /// The next few hours' peak rain chance and when it arrives, worded
-    /// like "Rain likely ~5 PM (60%)". Nil when no hour reaches 10%.
-    private var rainSoon: (summary: String, chance: Int)? {
-        let hours = Array(entry.hourlyRain.prefix(6))
-        guard let peak = hours.max(), peak >= 10,
-              let index = hours.firstIndex(of: peak)
-        else { return nil }
-        let likelihood = switch peak {
-        case 50...: "Rain likely"
-        case 30...: "Rain possible"
-        default: "Slight chance of rain"
-        }
-        // The first hour is the current one.
-        let when = if index == 0 {
-            "now"
-        } else if let start = entry.hourlyRainStart {
-            "~" + start.addingTimeInterval(Double(index) * 3600).formatted(.dateTime.hour())
-        } else {
-            "in \(index) hr"
-        }
-        return ("\(likelihood) \(when) (\(peak)%)", peak)
-    }
-
     /// A tiny bar chart of the next few hours' precipitation chance under a
     /// one-line summary, so you can see at a glance whether rain is imminent.
     private var hourlyRainStrip: some View {
@@ -228,7 +205,7 @@ struct RadarWidgetEntryView: View {
         // empty gap between this strip and the radar timestamp below it.
         let chartHeight = max(2, CGFloat(hours.max() ?? 0) / 100 * 16)
         return VStack(alignment: .leading, spacing: 2) {
-            if let soon = rainSoon {
+            if let soon = entry.rainSoon {
                 Text(soon.summary)
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.85))
@@ -334,6 +311,31 @@ struct RadarWidgetEntryView: View {
                 .multilineTextAlignment(.center)
         }
         .padding()
+    }
+}
+
+extension RadarEntry {
+    /// The next few hours' peak rain chance and when it arrives, worded
+    /// like "Rain likely ~5 PM (60%)". Nil when no hour reaches 10%.
+    var rainSoon: (summary: String, chance: Int)? {
+        let hours = Array(hourlyRain.prefix(6))
+        guard let peak = hours.max(), peak >= 10,
+              let index = hours.firstIndex(of: peak)
+        else { return nil }
+        let likelihood = switch peak {
+        case 50...: "Rain likely"
+        case 30...: "Rain possible"
+        default: "Slight chance of rain"
+        }
+        // The first hour is the current one.
+        let when = if index == 0 {
+            "now"
+        } else if let start = hourlyRainStart {
+            "~" + start.addingTimeInterval(Double(index) * 3600).formatted(.dateTime.hour())
+        } else {
+            "in \(index) hr"
+        }
+        return ("\(likelihood) \(when) (\(peak)%)", peak)
     }
 }
 

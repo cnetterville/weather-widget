@@ -67,6 +67,15 @@
 			);
 			target = E9768C7730261B550086F4EE /* RadarWidgetExtensionExtension */;
 		};
+		E9768CA030261B560086F4EE /* Exceptions for "RadarWidgetExtension" folder in "Weather WidgetTests" target */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Assets.xcassets,
+				Info.plist,
+				RadarWidgetExtensionBundle.swift,
+			);
+			target = E9768C56302618CF0086F4EE /* Weather WidgetTests */;
+		};
 /* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -88,6 +97,7 @@
 		E9768C7E30261B550086F4EE /* RadarWidgetExtension */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
 			exceptions = (
+				E9768CA030261B560086F4EE /* Exceptions for "RadarWidgetExtension" folder in "Weather WidgetTests" target */,
 				E9768C8B30261B560086F4EE /* Exceptions for "RadarWidgetExtension" folder in "RadarWidgetExtensionExtension" target */,
 			);
 			path = RadarWidgetExtension;
@@ -203,6 +213,7 @@
 			);
 			fileSystemSynchronizedGroups = (
 				E9768C5A302618CF0086F4EE /* Weather WidgetTests */,
+				E9768C7E30261B550086F4EE /* RadarWidgetExtension */,
 			);
 			name = "Weather WidgetTests";
 			packageProductDependencies = (

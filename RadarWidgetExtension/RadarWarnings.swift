@@ -107,9 +107,16 @@ enum StormWarningFeed {
     /// whole render.
     static func activeWarnings() async -> [StormWarning] {
         guard let url = URL(string: "https://mesonet.agron.iastate.edu/geojson/sbw.geojson"),
-              let (data, _) = try? await RadarNetwork.session.data(from: url),
-              let collection = try? JSONDecoder().decode(FeatureCollection.self, from: data)
+              let (data, _) = try? await RadarNetwork.session.data(from: url)
         else {
+            return []
+        }
+        return warnings(from: data)
+    }
+
+    /// The badge-worthy warnings in IEM's storm-based warning GeoJSON.
+    static func warnings(from data: Data) -> [StormWarning] {
+        guard let collection = try? JSONDecoder().decode(FeatureCollection.self, from: data) else {
             return []
         }
         let formatter = ISO8601DateFormatter()

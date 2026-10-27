@@ -251,17 +251,13 @@ struct RadarProvider: AppIntentTimelineProvider {
         return manager.location
     }
 
-    // Geocoding results are cached permanently: places don't move, and
-    // Apple throttles apps that re-geocode the same string repeatedly —
-    // which a widget refreshing every few minutes would otherwise do.
+    // Geocoding results are cached for a while (see GeocodeCache): Apple
+    // throttles apps that re-geocode the same string repeatedly, which a
+    // widget refreshing every few minutes would otherwise do.
 
     private func reverseGeocodedName(for location: CLLocation) async -> String? {
-        let cacheKey = String(
-            format: "reverse-geocode:%.2f,%.2f",
-            location.coordinate.latitude,
-            location.coordinate.longitude
-        )
-        if let cached = UserDefaults.standard.string(forKey: cacheKey) {
+        let cache = GeocodeCache()
+        if let cached = cache.name(near: location.coordinate) {
             return cached
         }
         guard let request = MKReverseGeocodingRequest(location: location),
@@ -270,32 +266,35 @@ struct RadarProvider: AppIntentTimelineProvider {
         else {
             return nil
         }
-        UserDefaults.standard.set(name, forKey: cacheKey)
+        cache.saveName(name, near: location.coordinate)
         return name
     }
 
     private func geocode(_ query: String) async throws -> (coordinate: CLLocationCoordinate2D, name: String) {
-        let cacheKey = "geocode:" + query.lowercased()
-        if let cached = UserDefaults.standard.dictionary(forKey: cacheKey),
-           let latitude = cached["latitude"] as? Double,
-           let longitude = cached["longitude"] as? Double,
-           let name = cached["name"] as? String {
-            return (CLLocationCoordinate2D(latitude: latitude, longitude: longitude), name)
+        let cache = GeocodeCache()
+        if let cached = cache.place(named: query), let coordinate = cached.coordinate {
+            return (coordinate, cached.name)
         }
         guard let request = MKGeocodingRequest(addressString: query) else {
             throw RadarRenderError.emptyLocation
         }
-        let mapItems = try await request.mapItems
-        guard let item = mapItems.first else {
-            throw RadarRenderError.locationNotFound
+        do {
+            let mapItems = try await request.mapItems
+            guard let item = mapItems.first else {
+                throw RadarRenderError.locationNotFound
+            }
+            let coordinate = item.location.coordinate
+            let name = item.addressRepresentations?.cityWithContext(.automatic) ?? item.name ?? query
+            cache.savePlace(named: query, name: name, coordinate: coordinate)
+            return (coordinate, name)
+        } catch {
+            // Offline or throttled once the cached match expired: keep using
+            // it until a lookup succeeds rather than lose the radar.
+            if let stale = cache.place(named: query, includingExpired: true), let coordinate = stale.coordinate {
+                return (coordinate, stale.name)
+            }
+            throw error
         }
-        let coordinate = item.location.coordinate
-        let name = item.addressRepresentations?.cityWithContext(.automatic) ?? item.name ?? query
-        UserDefaults.standard.set(
-            ["latitude": coordinate.latitude, "longitude": coordinate.longitude, "name": name],
-            forKey: cacheKey
-        )
-        return (coordinate, name)
     }
 }
 
