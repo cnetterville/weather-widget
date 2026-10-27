@@ -115,26 +115,10 @@ struct RadarConfigurationIntent: WidgetConfigurationIntent {
     @Parameter(title: "Show Cloud Cover", default: true)
     var showsCloudCover: Bool
 
-    /// Hide the typed-location field while following the Mac's location;
-    /// the widget caption shows the detected city instead.
-    static var parameterSummary: some ParameterSummary {
-        When(\.$useCurrentLocation, .equalTo, true) {
-            Summary {
-                \.$useCurrentLocation
-                \.$zoom
-                \.$mapStyle
-                \.$radarSource
-                \.$showsCloudCover
-            }
-        } otherwise: {
-            Summary {
-                \.$useCurrentLocation
-                \.$location
-                \.$zoom
-                \.$mapStyle
-                \.$radarSource
-                \.$showsCloudCover
-            }
-        }
-    }
+    // No conditional parameterSummary (one hiding Location while "Use My
+    // Current Location" is on). Toggling it rebuilt the edit form's rows,
+    // and after then changing a menu parameter, macOS 27 left the form's
+    // click handling stuck: it swallowed every click on the widget, even
+    // after Done. With every parameter always shown the form's layout never
+    // changes; Location is simply ignored while following the Mac.
 }
