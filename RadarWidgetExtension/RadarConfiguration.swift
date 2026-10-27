@@ -64,9 +64,12 @@ enum RadarMapStyle: String, AppEnum {
 enum RadarSource: String, AppEnum {
     /// Iowa Environmental Mesonet NEXRAD composite — US only, sharper detail.
     case nexrad
-    /// RainViewer aggregate — worldwide (includes Mexico via CONAGUA), but
-    /// tile detail is capped at zoom 7 and no warning polygons apply abroad.
-    case worldwide
+    /// Ventusky's radar map, captured from its web page — worldwide,
+    /// including Mexico, with smoothed radar and Ventusky's own base map.
+    /// Falls back to the RainViewer aggregate if the page can't be captured.
+    /// Keeps the "worldwide" raw value so widgets already set to the old
+    /// Worldwide (RainViewer) source carry over instead of failing to decode.
+    case ventusky = "worldwide"
 
     static var typeDisplayRepresentation: TypeDisplayRepresentation {
         "Radar Source"
@@ -75,7 +78,7 @@ enum RadarSource: String, AppEnum {
     static var caseDisplayRepresentations: [RadarSource: DisplayRepresentation] {
         [
             .nexrad: "United States (sharper)",
-            .worldwide: "Worldwide",
+            .ventusky: "Worldwide (Ventusky)",
         ]
     }
 }

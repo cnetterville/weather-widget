@@ -93,6 +93,16 @@ struct RadarMapRenderer {
     }
 
     func render() async throws -> Result {
+        // Ventusky draws its own map and radar; if its page can't be
+        // captured, fall back to the Apple map with RainViewer radar.
+        if radarSource == .ventusky, let result = await renderVentusky() {
+            return result
+        }
+        return try await renderMapKit()
+    }
+
+    /// Apple Maps snapshot with radar, cloud and snow tiles composited on.
+    private func renderMapKit() async throws -> Result {
         // Every source is fetched at once. WidgetKit gives a render a short
         // budget, and each request can take seconds on a slow network, so
         // waiting on them one after another risks running out of time.
@@ -119,15 +129,53 @@ struct RadarMapRenderer {
             warnings: visibleWarnings,
             cells: visible(cells: await cellsTask),
             cyclones: visibleCyclones,
-            over: snapshot
+            over: mapBase(for: snapshot)
         )
-        let badge = topWarning(in: visibleWarnings)
-        let arrival = visibleCyclones
+        return result(image: composited, radarTime: radar.time, warnings: visibleWarnings, cyclones: visibleCyclones)
+    }
+
+    /// Ventusky's map, which already includes its radar, with the warning,
+    /// storm and location overlays drawn on top. Nil if the page couldn't
+    /// be loaded or captured in time.
+    private func renderVentusky() async -> Result? {
+        async let warningsTask = StormWarningFeed.activeWarnings()
+        async let cellsTask = StormCellFeed.activeCells()
+        async let cyclonesTask = TropicalCycloneFeed.activeCyclones(
+            near: region.center,
+            spanDegrees: region.span.latitudeDelta
+        )
+        let viewport = VentuskyViewport(center: coordinate, latitudeSpan: latitudeSpan, displaySize: displaySize)
+        guard let image = await VentuskySnapshotter.capture(viewport, pixelSize: size) else { return nil }
+
+        let visibleWarnings = visible(warnings: await warningsTask)
+        let visibleCyclones = visible(cyclones: await cyclonesTask)
+        let composited = draw(
+            radar: TileSet(),
+            clouds: TileSet(),
+            snowImage: nil,
+            warnings: visibleWarnings,
+            cells: visible(cells: await cellsTask),
+            cyclones: visibleCyclones,
+            over: MapBase(image: image) { viewport.imagePoint(for: $0, imageSize: image.size) }
+        )
+        // Ventusky's page doesn't expose its radar frame time, so there's
+        // none to show (or flag as old).
+        return result(image: composited, radarTime: nil, warnings: visibleWarnings, cyclones: visibleCyclones)
+    }
+
+    private func result(
+        image: NSImage,
+        radarTime: Date?,
+        warnings: [StormWarning],
+        cyclones: [TropicalCyclone]
+    ) -> Result {
+        let badge = topWarning(in: warnings)
+        let arrival = cyclones
             .compactMap { $0.windArrival(at: coordinate) }
             .first
         return Result(
-            image: composited,
-            radarTime: radar.time,
+            image: image,
+            radarTime: radarTime,
             topWarning: badge?.warning,
             warningCoversLocation: badge?.coversLocation ?? false,
             tropicalWindArrival: arrival
@@ -273,8 +321,9 @@ struct RadarMapRenderer {
             async let time = Self.nexradTimestamp()
             let tiles = await fetchTiles(for: Self.nexradLayer)
             return (tiles, tiles.tiles.isEmpty ? nil : await time)
-        case .worldwide:
-            // RainViewer aggregates national radar networks worldwide. The
+        case .ventusky:
+            // Only reached when Ventusky's page can't be captured. RainViewer
+            // aggregates national radar networks worldwide. The
             // free API caps tiles at zoom 7, Universal Blue color scheme.
             guard let frame = await Self.rainViewerFrame() else { return (TileSet(), nil) }
             let layer = TileLayer(
@@ -737,6 +786,32 @@ struct RadarMapRenderer {
         string.draw(at: origin)
     }
 
+    /// The map the overlays are drawn on, and where a coordinate falls on
+    /// it (bottom-left origin, like the AppKit drawing context).
+    private struct MapBase {
+        let image: NSImage
+        let point: (CLLocationCoordinate2D) -> NSPoint
+    }
+
+    private func mapBase(for snapshot: MKMapSnapshotter.Snapshot) -> MapBase {
+        let imageSize = snapshot.image.size
+        // point(for:) may use a top-left or bottom-left origin depending on
+        // platform; calibrate with a coordinate known to be north of center.
+        let centerPoint = snapshot.point(for: region.center)
+        let northCoordinate = CLLocationCoordinate2D(
+            latitude: min(region.center.latitude + region.span.latitudeDelta / 4, 85),
+            longitude: region.center.longitude
+        )
+        let yIncreasesUpward = snapshot.point(for: northCoordinate).y > centerPoint.y
+        return MapBase(image: snapshot.image) { coordinate in
+            let point = snapshot.point(for: coordinate)
+            return NSPoint(
+                x: point.x,
+                y: yIncreasesUpward ? point.y : imageSize.height - point.y
+            )
+        }
+    }
+
     private func draw(
         radar: TileSet,
         clouds: TileSet,
@@ -744,9 +819,9 @@ struct RadarMapRenderer {
         warnings: [StormWarning],
         cells: [StormCell],
         cyclones: [TropicalCyclone],
-        over snapshot: MKMapSnapshotter.Snapshot
+        over base: MapBase
     ) -> NSImage {
-        let mapImage = snapshot.image
+        let mapImage = base.image
         let imageSize = mapImage.size
         guard imageSize.width > 0, imageSize.height > 0,
               let bitmap = NSBitmapImageRep(
@@ -765,24 +840,7 @@ struct RadarMapRenderer {
             return mapImage
         }
         bitmap.size = imageSize
-
-        // point(for:) may use a top-left or bottom-left origin depending on
-        // platform; calibrate with a coordinate known to be north of center.
-        let centerPoint = snapshot.point(for: region.center)
-        let northCoordinate = CLLocationCoordinate2D(
-            latitude: min(region.center.latitude + region.span.latitudeDelta / 4, 85),
-            longitude: region.center.longitude
-        )
-        let yIncreasesUpward = snapshot.point(for: northCoordinate).y > centerPoint.y
-
-        // Converts a coordinate to the drawing context's bottom-left origin.
-        let toImagePoint = { (coordinate: CLLocationCoordinate2D) -> NSPoint in
-            let point = snapshot.point(for: coordinate)
-            return NSPoint(
-                x: point.x,
-                y: yIncreasesUpward ? point.y : imageSize.height - point.y
-            )
-        }
+        let toImagePoint = base.point
 
         NSGraphicsContext.saveGraphicsState()
         NSGraphicsContext.current = context
@@ -1025,11 +1083,7 @@ struct RadarMapRenderer {
         }
 
         // Mark the configured location with a small white-ringed blue dot.
-        let markerPoint = snapshot.point(for: coordinate)
-        let marker = NSPoint(
-            x: markerPoint.x,
-            y: yIncreasesUpward ? markerPoint.y : imageSize.height - markerPoint.y
-        )
+        let marker = toImagePoint(coordinate)
         let dotRadius = Self.locationDotRadius * scale
         let ringRadius = (Self.locationDotRadius + Self.locationDotRingWidth) * scale
         NSColor.white.setFill()
