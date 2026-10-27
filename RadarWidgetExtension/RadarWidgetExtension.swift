@@ -79,7 +79,7 @@ struct RadarWidgetEntryView: View {
             Text(entry.locationName)
                 .font(.headline)
             if let rainChance = entry.rainChance {
-                Label("\(rainChance)% chance of rain today", systemImage: "umbrella.fill")
+                Label("\(rainChance)% chance of rain for the rest of today", systemImage: "umbrella.fill")
                     .font(.caption)
                     .foregroundStyle(.white.opacity(0.9))
             }
@@ -130,15 +130,40 @@ struct RadarWidgetEntryView: View {
     }
 
     private func warningBadge(_ title: String) -> some View {
-        HStack(spacing: 5) {
+        HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-            Text(title)
+                .font(.callout.bold())
+            VStack(alignment: .leading, spacing: 0) {
+                Text(title)
+                    .font(.caption.bold())
+                Text(warningDetail)
+                    .font(.caption2.weight(.medium))
+                    .opacity(0.85)
+            }
         }
-        .font(.caption.bold())
         .foregroundStyle(badgeTextColor)
         .padding(.horizontal, 10)
         .padding(.vertical, 5)
-        .background(badgeColor, in: Capsule())
+        .background(badgeColor, in: RoundedRectangle(cornerRadius: 10))
+        // A warning covering the location itself gets a white ring so it
+        // reads as more urgent than one elsewhere on the map.
+        .overlay {
+            if entry.warningCoversLocation {
+                RoundedRectangle(cornerRadius: 10)
+                    .strokeBorder(.white, lineWidth: 2)
+            }
+        }
+    }
+
+    /// "In effect here until 4:15 PM" or "Nearby until Thu 7:30 PM" — flood
+    /// warnings often run for days, so a later day is named.
+    private var warningDetail: String {
+        let place = entry.warningCoversLocation ? "In effect here" : "Nearby"
+        guard let expires = entry.warningExpires else { return place }
+        let format: Date.FormatStyle = Calendar.current.isDateInToday(expires)
+            ? .dateTime.hour().minute()
+            : .dateTime.weekday(.abbreviated).hour().minute()
+        return "\(place) until \(expires.formatted(format))"
     }
 
     private var badgeColor: Color {

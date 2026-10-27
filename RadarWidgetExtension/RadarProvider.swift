@@ -19,6 +19,9 @@ struct RadarEntry: TimelineEntry {
     let tropicalWindArrival: String?
     let warningTitle: String?
     let warningCode: String?
+    let warningExpires: Date?
+    /// Whether the badged warning covers this location, not just the map.
+    let warningCoversLocation: Bool
     let errorMessage: String?
 
     static func placeholder() -> RadarEntry {
@@ -32,6 +35,8 @@ struct RadarEntry: TimelineEntry {
             tropicalWindArrival: nil,
             warningTitle: nil,
             warningCode: nil,
+            warningExpires: nil,
+            warningCoversLocation: false,
             errorMessage: nil
         )
     }
@@ -68,8 +73,9 @@ struct RadarProvider: AppIntentTimelineProvider {
                 mapStyle: configuration.mapStyle,
                 radarSource: configuration.radarSource,
                 showsClouds: configuration.showsCloudCover,
+                displaySize: context.displaySize,
                 // Render at 2x the widget's point size so the map stays sharp.
-                size: CGSize(width: context.displaySize.width * 2, height: context.displaySize.height * 2)
+                scale: 2
             )
             async let outlookTask = RainForecast.outlook(at: place.coordinate)
             let result = try await renderer.render()
@@ -80,11 +86,13 @@ struct RadarProvider: AppIntentTimelineProvider {
                     savedAt: .now,
                     radarTime: result.radarTime,
                     locationName: place.name,
-                    rainChance: outlook.todayMax,
+                    rainChance: outlook.restOfTodayMax,
                     hourlyRain: outlook.next6Hours,
                     tropicalWindArrival: result.tropicalWindArrival,
                     warningTitle: result.topWarning?.eventName,
-                    warningCode: result.topWarning?.phenomena
+                    warningCode: result.topWarning?.phenomena,
+                    warningExpires: result.topWarning?.expires,
+                    warningCoversLocation: result.warningCoversLocation
                 ),
                 key: cacheKey
             )
@@ -93,16 +101,22 @@ struct RadarProvider: AppIntentTimelineProvider {
                 locationName: place.name,
                 image: result.image,
                 radarTime: result.radarTime,
-                rainChance: outlook.todayMax,
+                rainChance: outlook.restOfTodayMax,
                 hourlyRain: outlook.next6Hours,
                 tropicalWindArrival: result.tropicalWindArrival,
                 warningTitle: result.topWarning?.eventName,
                 warningCode: result.topWarning?.phenomena,
+                warningExpires: result.topWarning?.expires,
+                warningCoversLocation: result.warningCoversLocation,
                 errorMessage: nil
             )
         } catch {
             // Fall back to the last successful render before showing an error.
             if let cached = RadarEntryCache.load(key: cacheKey) {
+                // A warning that has since expired shouldn't outlive it on
+                // the stale image's badge.
+                let expires = cached.metadata.warningExpires
+                let warningActive = expires.map { $0 > .now } ?? true
                 return RadarEntry(
                     date: .now,
                     locationName: cached.metadata.locationName,
@@ -111,8 +125,10 @@ struct RadarProvider: AppIntentTimelineProvider {
                     rainChance: cached.metadata.rainChance,
                     hourlyRain: cached.metadata.hourlyRain ?? [],
                     tropicalWindArrival: cached.metadata.tropicalWindArrival,
-                    warningTitle: cached.metadata.warningTitle,
-                    warningCode: cached.metadata.warningCode,
+                    warningTitle: warningActive ? cached.metadata.warningTitle : nil,
+                    warningCode: warningActive ? cached.metadata.warningCode : nil,
+                    warningExpires: warningActive ? expires : nil,
+                    warningCoversLocation: warningActive && cached.metadata.warningCoversLocation == true,
                     errorMessage: nil
                 )
             }
@@ -142,6 +158,8 @@ struct RadarProvider: AppIntentTimelineProvider {
             tropicalWindArrival: nil,
             warningTitle: nil,
             warningCode: nil,
+            warningExpires: nil,
+            warningCoversLocation: false,
             errorMessage: message
         )
     }

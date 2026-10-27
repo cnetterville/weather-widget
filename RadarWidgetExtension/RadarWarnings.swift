@@ -14,6 +14,8 @@ struct StormWarning {
     let phenomena: String
     /// Polygon rings as coordinate sequences.
     let rings: [[CLLocationCoordinate2D]]
+    /// When the warning expires, if the feed says.
+    let expires: Date?
 
     /// Draw and badge priority, most dangerous first.
     static let priority = ["TO", "SV", "FF", "MA", "FA", "FL"]
@@ -39,19 +41,15 @@ struct StormWarning {
     var eventName: String { Self.names[phenomena] ?? "Weather Warning" }
     var color: NSColor { Self.colors[phenomena] ?? .systemOrange }
 
-    /// Whether any part of the warning falls inside the given bounds.
-    func intersects(
-        minLatitude: Double, maxLatitude: Double,
-        minLongitude: Double, maxLongitude: Double
-    ) -> Bool {
-        for ring in rings {
-            for coordinate in ring
-            where coordinate.latitude >= minLatitude && coordinate.latitude <= maxLatitude
-                && coordinate.longitude >= minLongitude && coordinate.longitude <= maxLongitude {
-                return true
-            }
-        }
-        return false
+    /// Whether any part of the warning overlaps the given bounds, including
+    /// a polygon big enough to surround them.
+    func intersects(_ bounds: GeoBounds) -> Bool {
+        rings.contains { GeoPolygon.ring($0, overlaps: bounds) }
+    }
+
+    /// Whether the location is inside the warned area.
+    func contains(_ location: CLLocationCoordinate2D) -> Bool {
+        rings.contains { GeoPolygon.contains(location, ring: $0) }
     }
 }
 
@@ -61,6 +59,7 @@ enum StormWarningFeed {
             struct Properties: Decodable {
                 let phenomena: String?
                 let significance: String?
+                let expire: String?
             }
             let properties: Properties
             let geometry: Geometry?
@@ -113,6 +112,7 @@ enum StormWarningFeed {
         else {
             return []
         }
+        let formatter = ISO8601DateFormatter()
         return collection.features.compactMap { feature in
             guard feature.properties.significance == "W",
                   let phenomena = feature.properties.phenomena,
@@ -122,7 +122,11 @@ enum StormWarningFeed {
             else {
                 return nil
             }
-            return StormWarning(phenomena: phenomena, rings: geometry.rings)
+            return StormWarning(
+                phenomena: phenomena,
+                rings: geometry.rings,
+                expires: feature.properties.expire.flatMap(formatter.date(from:))
+            )
         }
     }
 }

@@ -56,26 +56,43 @@ struct RadarMapRenderer {
     let mapStyle: RadarMapStyle
     let radarSource: RadarSource
     let showsClouds: Bool
-    let size: CGSize
+    /// The widget's size in points.
+    let displaySize: CGSize
+    /// Image pixels per widget point. Overlay sizes below are in points and
+    /// multiplied by this, so they look the same at any render scale.
+    let scale: CGFloat
 
     private static let radarTileAlpha: CGFloat = 0.7
     private static let maximumTileCount = 48
-    // In image pixels; the image renders at 2x the widget's point size.
-    private static let locationDotRadius: CGFloat = 7
-    private static let locationDotRingWidth: CGFloat = 3
+    private static let locationDotRadius: CGFloat = 3.5
+    private static let locationDotRingWidth: CGFloat = 1.5
+
+    /// The rendered image size, in pixels.
+    private var size: CGSize {
+        CGSize(width: displaySize.width * scale, height: displaySize.height * scale)
+    }
 
     struct Result {
         let image: NSImage
         let radarTime: Date?
-        /// The most dangerous active warning visible in the rendered area.
+        /// The warning to badge: the most dangerous one covering the
+        /// widget's location, or failing that, the most dangerous in view.
         let topWarning: StormWarning?
+        /// Whether `topWarning` covers the widget's location itself.
+        let warningCoversLocation: Bool
         /// NHC's most likely arrival time of tropical-storm-force winds at the
         /// widget's location, like "Sat 2 am", when a storm is inbound.
         let tropicalWindArrival: String?
     }
 
     func render() async throws -> Result {
-        let snapshot = try await takeSnapshot()
+        // Every source is fetched at once. WidgetKit gives a render a short
+        // budget, and each request can take seconds on a slow network, so
+        // waiting on them one after another risks running out of time.
+        async let snapshotTask = takeSnapshot()
+        async let radarTask = radarTiles()
+        async let cloudTask = cloudTiles()
+        async let snowTask = snowOverlay()
         async let warningsTask = StormWarningFeed.activeWarnings()
         async let cellsTask = StormCellFeed.activeCells()
         async let cyclonesTask = TropicalCycloneFeed.activeCyclones(
@@ -83,72 +100,52 @@ struct RadarMapRenderer {
             spanDegrees: region.span.latitudeDelta
         )
 
-        // Radar being briefly unreachable shouldn't blank the widget; with no
-        // layer or tiles, draw() still produces the map with the location dot.
-        var tiles: [(tile: TileCoordinate, image: NSImage)] = []
-        var zoom = 0
-        let layer = await tileLayer()
-        if let layer {
-            zoom = tileZoom(for: layer)
-            tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom, layer: layer)
-        }
-
-        var cloudTiles: [(tile: TileCoordinate, image: NSImage)] = []
-        var cloudZoom = 0
-        if showsClouds, let clouds = cloudLayer() {
-            cloudZoom = tileZoom(for: clouds)
-            cloudTiles = await fetchTileImages(tiles: tileRange(zoom: cloudZoom), zoom: cloudZoom, layer: clouds)
-        }
-
-        // Snow overlay only applies to the US source's coverage area.
-        var snowImage: NSImage?
-        if radarSource == .nexrad {
-            snowImage = await snowOverlay()
-        }
-
+        let snapshot = try await snapshotTask
+        let radar = await radarTask
         let visibleWarnings = visible(warnings: await warningsTask)
-        let visibleCells = visible(cells: await cellsTask)
         let visibleCyclones = visible(cyclones: await cyclonesTask)
 
         let composited = draw(
-            tiles: tiles,
-            cloudTiles: cloudTiles,
-            snowImage: snowImage,
+            radar: radar.tiles,
+            clouds: await cloudTask,
+            snowImage: await snowTask,
             warnings: visibleWarnings,
-            cells: visibleCells,
+            cells: visible(cells: await cellsTask),
             cyclones: visibleCyclones,
-            zoom: zoom,
-            cloudZoom: cloudZoom,
             over: snapshot
         )
-        let radarTime = tiles.isEmpty ? nil : layer?.time
-        let topWarning = StormWarning.priority
-            .compactMap { code in visibleWarnings.first { $0.phenomena == code } }
-            .first
+        let badge = topWarning(in: visibleWarnings)
         let arrival = visibleCyclones
             .compactMap { $0.windArrival(at: coordinate) }
             .first
         return Result(
             image: composited,
-            radarTime: radarTime,
-            topWarning: topWarning,
+            radarTime: radar.time,
+            topWarning: badge?.warning,
+            warningCoversLocation: badge?.coversLocation ?? false,
             tropicalWindArrival: arrival
         )
+    }
+
+    /// The most dangerous warning covering the widget's location, or failing
+    /// that, the most dangerous one in view.
+    private func topWarning(in warnings: [StormWarning]) -> (warning: StormWarning, coversLocation: Bool)? {
+        let local = warnings.filter { $0.contains(coordinate) }
+        for (candidates, coversLocation) in [(local, true), (warnings, false)] {
+            for code in StormWarning.priority {
+                if let warning = candidates.first(where: { $0.phenomena == code }) {
+                    return (warning, coversLocation)
+                }
+            }
+        }
+        return nil
     }
 
     /// Warnings that overlap the rendered area (with the same margin used
     /// for tile coverage).
     private func visible(warnings: [StormWarning]) -> [StormWarning] {
-        let center = region.center
-        let span = region.span
-        return warnings.filter {
-            $0.intersects(
-                minLatitude: center.latitude - span.latitudeDelta * 0.7,
-                maxLatitude: center.latitude + span.latitudeDelta * 0.7,
-                minLongitude: center.longitude - span.longitudeDelta * 0.7,
-                maxLongitude: center.longitude + span.longitudeDelta * 0.7
-            )
-        }
+        let bounds = coverageBounds
+        return warnings.filter { $0.intersects(bounds) }
     }
 
     /// The strongest tracked storm cells inside the rendered area, capped so
@@ -175,16 +172,8 @@ struct RadarMapRenderer {
     /// Cyclones whose forecast cone overlaps the rendered area (same margin
     /// used for tile coverage).
     private func visible(cyclones: [TropicalCyclone]) -> [TropicalCyclone] {
-        let center = region.center
-        let span = region.span
-        return cyclones.filter {
-            $0.intersects(
-                minLatitude: center.latitude - span.latitudeDelta * 0.7,
-                maxLatitude: center.latitude + span.latitudeDelta * 0.7,
-                minLongitude: center.longitude - span.longitudeDelta * 0.7,
-                maxLongitude: center.longitude + span.longitudeDelta * 0.7
-            )
-        }
+        let bounds = coverageBounds
+        return cyclones.filter { $0.intersects(bounds) }
     }
 
     // MARK: - Map snapshot
@@ -218,7 +207,6 @@ struct RadarMapRenderer {
 
     /// A resolved tile layer: where tiles live and what they look like.
     private struct TileLayer {
-        let time: Date?
         let tileSize: Double
         let zoomRange: ClosedRange<Int>
         /// URL pieces around the /{z}/{x}/{y} path component.
@@ -242,7 +230,6 @@ struct RadarMapRenderer {
         }
         let satellite = coordinate.longitude < -105 ? "GOES-West_ABI_GeoColor" : "GOES-East_ABI_GeoColor"
         return TileLayer(
-            time: nil,
             tileSize: 256,
             zoomRange: 1...7,
             urlPrefix: "https://gibs.earthdata.nasa.gov/wmts/epsg3857/best/\(satellite)/default/default/GoogleMapsCompatible_Level7",
@@ -251,49 +238,73 @@ struct RadarMapRenderer {
         )
     }
 
-    private func tileLayer() async -> TileLayer? {
+    /// IEM's MRMS Hybrid Scan Reflectivity mosaic (q2-hsr): a
+    /// quality-controlled US composite that suppresses ground clutter and
+    /// anomalous propagation, unlike the raw base-reflectivity (n0q)
+    /// product. Regenerated about every 2 minutes.
+    private static let nexradLayer = TileLayer(
+        tileSize: 256,
+        zoomRange: 2...12,
+        urlPrefix: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/q2-hsr-900913",
+        urlSuffix: ".png"
+    )
+
+    /// Tiles fetched for one layer, at the zoom they were fetched for.
+    private struct TileSet {
+        var tiles: [(tile: TileCoordinate, image: NSImage)] = []
+        var zoom = 0
+    }
+
+    /// The radar tiles plus the time of the frame they show. Radar being
+    /// briefly unreachable shouldn't blank the widget; with no tiles, draw()
+    /// still produces the map with the location dot.
+    private func radarTiles() async -> (tiles: TileSet, time: Date?) {
         switch radarSource {
         case .nexrad:
-            // IEM's MRMS Hybrid Scan Reflectivity mosaic (q2-hsr): a
-            // quality-controlled US composite that suppresses ground clutter
-            // and anomalous propagation, unlike the raw base-reflectivity
-            // (n0q) product. Regenerated about every 2 minutes.
-            return TileLayer(
-                time: await Self.nexradTimestamp(),
-                tileSize: 256,
-                zoomRange: 2...12,
-                urlPrefix: "https://mesonet.agron.iastate.edu/cache/tile.py/1.0.0/q2-hsr-900913",
-                urlSuffix: ".png"
-            )
+            // IEM's tile URLs always serve the newest mosaic, so the
+            // timestamp lookup can run alongside the tile downloads.
+            async let time = Self.nexradTimestamp()
+            let tiles = await fetchTiles(for: Self.nexradLayer)
+            return (tiles, tiles.tiles.isEmpty ? nil : await time)
         case .worldwide:
             // RainViewer aggregates national radar networks worldwide. The
             // free API caps tiles at zoom 7, Universal Blue color scheme.
-            guard let frame = await Self.rainViewerFrame() else { return nil }
-            return TileLayer(
-                time: frame.time,
+            guard let frame = await Self.rainViewerFrame() else { return (TileSet(), nil) }
+            let layer = TileLayer(
                 tileSize: 512,
                 zoomRange: 2...7,
                 urlPrefix: "\(frame.host)\(frame.path)/512",
                 urlSuffix: "/2/1_1.png"
             )
+            let tiles = await fetchTiles(for: layer)
+            return (tiles, tiles.tiles.isEmpty ? nil : frame.time)
         }
+    }
+
+    /// Satellite cloud tiles, or none when turned off or out of coverage.
+    private func cloudTiles() async -> TileSet {
+        guard showsClouds, let layer = cloudLayer() else { return TileSet() }
+        return await fetchTiles(for: layer)
+    }
+
+    private func fetchTiles(for layer: TileLayer) async -> TileSet {
+        let zoom = tileZoom(for: layer)
+        let tiles = await fetchTileImages(tiles: tileRange(zoom: zoom), zoom: zoom, layer: layer)
+        return TileSet(tiles: tiles, zoom: zoom)
     }
 
     // MARK: - Winter precipitation type
 
     /// The geographic bounds the overlays cover: the requested region plus the
     /// same margin used for tile coverage.
-    private var coverageBounds: (
-        minLatitude: Double, maxLatitude: Double,
-        minLongitude: Double, maxLongitude: Double
-    ) {
+    private var coverageBounds: GeoBounds {
         let center = region.center
         let span = region.span
-        return (
-            max(center.latitude - span.latitudeDelta * 0.7, -85),
-            min(center.latitude + span.latitudeDelta * 0.7, 85),
-            center.longitude - span.longitudeDelta * 0.7,
-            center.longitude + span.longitudeDelta * 0.7
+        return GeoBounds(
+            minLatitude: max(center.latitude - span.latitudeDelta * 0.7, -85),
+            maxLatitude: min(center.latitude + span.latitudeDelta * 0.7, 85),
+            minLongitude: center.longitude - span.longitudeDelta * 0.7,
+            maxLongitude: center.longitude + span.longitudeDelta * 0.7
         )
     }
 
@@ -302,6 +313,8 @@ struct RadarMapRenderer {
     /// reads differently from rain. Nil outside CONUS, on any failure, or —
     /// most of the year — when nothing in view is snow.
     private func snowOverlay() async -> NSImage? {
+        // Only the US radar source shares this product's coverage area.
+        guard radarSource == .nexrad else { return nil }
         let bounds = coverageBounds
         // The product covers CONUS only; skip the fetch entirely elsewhere.
         guard bounds.maxLatitude > 21, bounds.minLatitude < 53,
@@ -627,30 +640,29 @@ struct RadarMapRenderer {
         paragraph.alignment = .center
         let shadow = NSShadow()
         shadow.shadowColor = .black
-        shadow.shadowBlurRadius = 3
+        shadow.shadowBlurRadius = 1.5 * scale
         shadow.shadowOffset = .zero
         let string = NSAttributedString(string: text, attributes: [
-            .font: NSFont.systemFont(ofSize: 12, weight: .semibold),
+            .font: NSFont.systemFont(ofSize: 10 * scale, weight: .semibold),
             .foregroundColor: NSColor.white,
             .paragraphStyle: paragraph,
             .shadow: shadow,
         ])
         let size = string.size()
         var origin = NSPoint(x: point.x - size.width / 2, y: point.y - size.height)
-        origin.x = min(max(origin.x, 4), imageBounds.maxX - size.width - 4)
-        origin.y = min(max(origin.y, 4), imageBounds.maxY - size.height - 4)
+        let inset = 2 * scale
+        origin.x = min(max(origin.x, inset), imageBounds.maxX - size.width - inset)
+        origin.y = min(max(origin.y, inset), imageBounds.maxY - size.height - inset)
         string.draw(at: origin)
     }
 
     private func draw(
-        tiles: [(tile: TileCoordinate, image: NSImage)],
-        cloudTiles: [(tile: TileCoordinate, image: NSImage)],
+        radar: TileSet,
+        clouds: TileSet,
         snowImage: NSImage?,
         warnings: [StormWarning],
         cells: [StormCell],
         cyclones: [TropicalCyclone],
-        zoom: Int,
-        cloudZoom: Int,
         over snapshot: MKMapSnapshotter.Snapshot
     ) -> NSImage {
         let mapImage = snapshot.image
@@ -698,9 +710,9 @@ struct RadarMapRenderer {
 
         // Semi-transparent satellite imagery under the radar, so cloud cover
         // shows on dry days without hiding the map.
-        for (tile, image) in cloudTiles {
-            let northWest = toImagePoint(Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: cloudZoom))
-            let southEast = toImagePoint(Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: cloudZoom))
+        for (tile, image) in clouds.tiles {
+            let northWest = toImagePoint(Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: clouds.zoom))
+            let southEast = toImagePoint(Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: clouds.zoom))
             let rect = NSRect(
                 x: min(northWest.x, southEast.x),
                 y: min(northWest.y, southEast.y),
@@ -713,7 +725,7 @@ struct RadarMapRenderer {
 
         // Composite the tiles into their own layer so close zooms can be
         // smoothed before blending onto the map.
-        if let radarLayer = radarLayer(tiles: tiles, zoom: zoom, imageSize: imageSize, toImagePoint: toImagePoint) {
+        if let radarLayer = radarLayer(tiles: radar.tiles, zoom: radar.zoom, imageSize: imageSize, toImagePoint: toImagePoint) {
             radarLayer.draw(
                 in: NSRect(origin: .zero, size: imageSize),
                 from: .zero,
@@ -753,7 +765,7 @@ struct RadarMapRenderer {
                         path.line(to: toImagePoint(coordinate))
                     }
                     path.close()
-                    path.lineWidth = 4
+                    path.lineWidth = 2 * scale
                     warning.color.withAlphaComponent(0.9).setStroke()
                     path.stroke()
                 }
@@ -775,8 +787,8 @@ struct RadarMapRenderer {
                 NSColor.white.withAlphaComponent(0.16).setFill()
                 path.fill()
                 NSColor.white.withAlphaComponent(0.8).setStroke()
-                path.lineWidth = 2
-                path.setLineDash([6, 4], count: 2, phase: 0)
+                path.lineWidth = 1 * scale
+                path.setLineDash([3 * scale, 2 * scale], count: 2, phase: 0)
                 path.stroke()
             }
 
@@ -788,10 +800,10 @@ struct RadarMapRenderer {
                     line.line(to: point)
                 }
                 NSColor.black.withAlphaComponent(0.5).setStroke()
-                line.lineWidth = 5
+                line.lineWidth = 2.5 * scale
                 line.stroke()
                 cyclone.color.setStroke()
-                line.lineWidth = 2.5
+                line.lineWidth = 1.25 * scale
                 line.stroke()
             }
 
@@ -805,10 +817,10 @@ struct RadarMapRenderer {
                     line.line(to: toImagePoint(coordinate))
                 }
                 NSColor.black.withAlphaComponent(0.5).setStroke()
-                line.lineWidth = 8
+                line.lineWidth = 4 * scale
                 line.stroke()
                 segment.color.setStroke()
-                line.lineWidth = 5
+                line.lineWidth = 2.5 * scale
                 line.stroke()
             }
         }
@@ -822,7 +834,7 @@ struct RadarMapRenderer {
             // drct is the direction the cell moves FROM; the arrow points
             // where it's heading. North is up (+y) in this context.
             let heading = (cell.fromDirectionDegrees + 180) * .pi / 180
-            let length = min(26 + cell.speedKnots * 0.6, 60)
+            let length = min(13 + cell.speedKnots * 0.3, 30) * scale
             let head = NSPoint(
                 x: origin.x + sin(heading) * length,
                 y: origin.y + cos(heading) * length
@@ -837,17 +849,17 @@ struct RadarMapRenderer {
                 let barbAngle = heading + barbOffset
                 arrow.move(to: head)
                 arrow.line(to: NSPoint(
-                    x: head.x + sin(barbAngle) * 11,
-                    y: head.y + cos(barbAngle) * 11
+                    x: head.x + sin(barbAngle) * 5.5 * scale,
+                    y: head.y + cos(barbAngle) * 5.5 * scale
                 ))
             }
 
             // Dark halo first so the arrow reads over any radar color.
             NSColor.black.withAlphaComponent(0.55).setStroke()
-            arrow.lineWidth = 6
+            arrow.lineWidth = 3 * scale
             arrow.stroke()
             NSColor.white.setStroke()
-            arrow.lineWidth = 2.5
+            arrow.lineWidth = 1.25 * scale
             arrow.stroke()
         }
 
@@ -860,38 +872,41 @@ struct RadarMapRenderer {
 
             if cell.hasTornadoSignature {
                 let triangle = NSBezierPath()
-                triangle.move(to: NSPoint(x: origin.x - 9, y: origin.y + 8))
-                triangle.line(to: NSPoint(x: origin.x + 9, y: origin.y + 8))
-                triangle.line(to: NSPoint(x: origin.x, y: origin.y - 10))
+                triangle.move(to: NSPoint(x: origin.x - 4.5 * scale, y: origin.y + 4 * scale))
+                triangle.line(to: NSPoint(x: origin.x + 4.5 * scale, y: origin.y + 4 * scale))
+                triangle.line(to: NSPoint(x: origin.x, y: origin.y - 5 * scale))
                 triangle.close()
                 NSColor.systemRed.setFill()
                 triangle.fill()
                 NSColor.white.setStroke()
-                triangle.lineWidth = 2
+                triangle.lineWidth = 1 * scale
                 triangle.stroke()
             } else if cell.hasMesocyclone {
-                let ring = NSBezierPath(ovalIn: NSRect(x: origin.x - 11, y: origin.y - 11, width: 22, height: 22))
+                let radius = 5.5 * scale
+                let ring = NSBezierPath(ovalIn: NSRect(
+                    x: origin.x - radius, y: origin.y - radius, width: radius * 2, height: radius * 2
+                ))
                 NSColor.black.withAlphaComponent(0.55).setStroke()
-                ring.lineWidth = 5.5
+                ring.lineWidth = 2.75 * scale
                 ring.stroke()
                 NSColor.systemOrange.setStroke()
-                ring.lineWidth = 3
+                ring.lineWidth = 1.5 * scale
                 ring.stroke()
             }
 
             if cell.hasHailIndicator {
                 // Offset right so it doesn't sit on a rotation marker.
-                let center = NSPoint(x: origin.x + 16, y: origin.y)
+                let center = NSPoint(x: origin.x + 8 * scale, y: origin.y)
                 let diamond = NSBezierPath()
-                diamond.move(to: NSPoint(x: center.x, y: center.y + 8))
-                diamond.line(to: NSPoint(x: center.x + 7, y: center.y))
-                diamond.line(to: NSPoint(x: center.x, y: center.y - 8))
-                diamond.line(to: NSPoint(x: center.x - 7, y: center.y))
+                diamond.move(to: NSPoint(x: center.x, y: center.y + 4 * scale))
+                diamond.line(to: NSPoint(x: center.x + 3.5 * scale, y: center.y))
+                diamond.line(to: NSPoint(x: center.x, y: center.y - 4 * scale))
+                diamond.line(to: NSPoint(x: center.x - 3.5 * scale, y: center.y))
                 diamond.close()
                 NSColor.systemCyan.setFill()
                 diamond.fill()
                 NSColor.black.withAlphaComponent(0.7).setStroke()
-                diamond.lineWidth = 1.5
+                diamond.lineWidth = 0.75 * scale
                 diamond.stroke()
             }
         }
@@ -901,16 +916,17 @@ struct RadarMapRenderer {
             let center = toImagePoint(cyclone.center)
             guard imageBounds.contains(center) else { continue }
 
-            let configuration = NSImage.SymbolConfiguration(pointSize: 24, weight: .bold)
+            let configuration = NSImage.SymbolConfiguration(pointSize: 16 * scale, weight: .bold)
                 .applying(NSImage.SymbolConfiguration(paletteColors: [cyclone.color]))
             if let glyph = NSImage(systemSymbolName: "hurricane", accessibilityDescription: nil)?
                 .withSymbolConfiguration(configuration) {
                 let size = glyph.size
+                let pad = 1.5 * scale
                 let dark = NSBezierPath(ovalIn: NSRect(
-                    x: center.x - size.width / 2 - 3,
-                    y: center.y - size.height / 2 - 3,
-                    width: size.width + 6,
-                    height: size.height + 6
+                    x: center.x - size.width / 2 - pad,
+                    y: center.y - size.height / 2 - pad,
+                    width: size.width + pad * 2,
+                    height: size.height + pad * 2
                 ))
                 NSColor.black.withAlphaComponent(0.45).setFill()
                 dark.fill()
@@ -929,7 +945,7 @@ struct RadarMapRenderer {
 
             drawLabel(
                 "\(cyclone.name) · \(cyclone.summary)",
-                at: NSPoint(x: center.x, y: center.y - 20),
+                at: NSPoint(x: center.x, y: center.y - 13 * scale),
                 imageBounds: imageBounds
             )
         }
@@ -940,7 +956,8 @@ struct RadarMapRenderer {
             x: markerPoint.x,
             y: yIncreasesUpward ? markerPoint.y : imageSize.height - markerPoint.y
         )
-        let ringRadius = Self.locationDotRadius + Self.locationDotRingWidth
+        let dotRadius = Self.locationDotRadius * scale
+        let ringRadius = (Self.locationDotRadius + Self.locationDotRingWidth) * scale
         NSColor.white.setFill()
         NSBezierPath(ovalIn: NSRect(
             x: marker.x - ringRadius,
@@ -950,10 +967,10 @@ struct RadarMapRenderer {
         )).fill()
         NSColor.systemBlue.setFill()
         NSBezierPath(ovalIn: NSRect(
-            x: marker.x - Self.locationDotRadius,
-            y: marker.y - Self.locationDotRadius,
-            width: Self.locationDotRadius * 2,
-            height: Self.locationDotRadius * 2
+            x: marker.x - dotRadius,
+            y: marker.y - dotRadius,
+            width: dotRadius * 2,
+            height: dotRadius * 2
         )).fill()
 
         context.flushGraphics()

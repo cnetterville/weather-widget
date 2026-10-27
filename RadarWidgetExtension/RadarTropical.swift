@@ -109,19 +109,11 @@ struct TropicalCyclone {
         }
     }
 
-    /// Whether any part of the cone falls inside the given bounds.
-    func intersects(
-        minLatitude: Double, maxLatitude: Double,
-        minLongitude: Double, maxLongitude: Double
-    ) -> Bool {
-        for ring in coneRings {
-            for point in ring
-            where point.latitude >= minLatitude && point.latitude <= maxLatitude
-                && point.longitude >= minLongitude && point.longitude <= maxLongitude {
-                return true
-            }
-        }
-        return false
+    /// Whether any part of the cone overlaps the given bounds. A cone is
+    /// often far wider than a close-zoom map, so the case where it surrounds
+    /// the whole view matters most.
+    func intersects(_ bounds: GeoBounds) -> Bool {
+        coneRings.contains { GeoPolygon.ring($0, overlaps: bounds) }
     }
 }
 

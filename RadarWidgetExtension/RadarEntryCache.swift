@@ -20,6 +20,8 @@ enum RadarEntryCache {
         var tropicalWindArrival: String?
         let warningTitle: String?
         let warningCode: String?
+        var warningExpires: Date?
+        var warningCoversLocation: Bool?
     }
 
     /// Ignore cached renders older than this — very old radar is worse
