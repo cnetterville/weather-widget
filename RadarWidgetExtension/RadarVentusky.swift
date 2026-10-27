@@ -110,6 +110,11 @@ final class VentuskySnapshotter: NSObject, WKNavigationDelegate {
             injectionTime: .atDocumentStart,
             forMainFrameOnly: true
         ))
+        // The page is never on screen, and inside a widget extension WebKit
+        // suspends the content process of an inactive web view a few seconds
+        // into loading, freezing its layers so the capture comes back empty.
+        // Keep it running at full speed until the capture is taken.
+        configuration.preferences.inactiveSchedulingPolicy = .none
         // No window: the page lays out and draws (WebGL included) without
         // one, and a widget extension shouldn't be opening windows.
         let webView = WKWebView(frame: CGRect(origin: .zero, size: cssSize), configuration: configuration)
