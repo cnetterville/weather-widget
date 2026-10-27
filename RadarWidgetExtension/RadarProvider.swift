@@ -16,6 +16,8 @@ struct RadarEntry: TimelineEntry {
     let radarTime: Date?
     let rainChance: Int?
     let hourlyRain: [Int]
+    /// When the first of `hourlyRain` begins.
+    var hourlyRainStart: Date?
     let tropicalWindArrival: String?
     let warningTitle: String?
     let warningCode: String?
@@ -125,6 +127,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     locationName: place.name,
                     rainChance: outlook.restOfTodayMax,
                     hourlyRain: outlook.next6Hours,
+                    hourlyRainStart: outlook.next6HoursStart,
                     tropicalWindArrival: result.tropicalWindArrival,
                     warningTitle: result.topWarning?.eventName,
                     warningCode: result.topWarning?.phenomena,
@@ -140,6 +143,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                 radarTime: result.radarTime,
                 rainChance: outlook.restOfTodayMax,
                 hourlyRain: outlook.next6Hours,
+                hourlyRainStart: outlook.next6HoursStart,
                 tropicalWindArrival: result.tropicalWindArrival,
                 warningTitle: result.topWarning?.eventName,
                 warningCode: result.topWarning?.phenomena,
@@ -161,6 +165,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     radarTime: cached.metadata.radarTime,
                     rainChance: cached.metadata.rainChance,
                     hourlyRain: cached.metadata.hourlyRain ?? [],
+                    hourlyRainStart: cached.metadata.hourlyRainStart,
                     tropicalWindArrival: cached.metadata.tropicalWindArrival,
                     warningTitle: warningActive ? cached.metadata.warningTitle : nil,
                     warningCode: warningActive ? cached.metadata.warningCode : nil,

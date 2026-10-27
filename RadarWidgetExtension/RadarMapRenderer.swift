@@ -63,6 +63,13 @@ struct RadarMapRenderer {
     let scale: CGFloat
 
     private static let radarTileAlpha: CGFloat = 0.7
+    /// Opacity of the thickest clouds; thinner ones scale down from this.
+    private static let cloudMaxAlpha = 0.6
+    /// Luminance where satellite pixels start to count as cloud, and where
+    /// they're fully cloud. Bright desert falls in this range too but is
+    /// told apart by its color (see `cloudLayer`); snow cover can't be and
+    /// shows as cloud, much as it does on the satellite image itself.
+    private static let cloudLuminanceRange = 0.35...0.75
     private static let maximumTileCount = 48
     private static let locationDotRadius: CGFloat = 3.5
     private static let locationDotRingWidth: CGFloat = 1.5
@@ -564,14 +571,14 @@ struct RadarMapRenderer {
         }
     }
 
-    /// Draws the tiles at full opacity into a transparent layer, smoothing
-    /// the ~1 km radar data cells when they'd read as visible blocks.
-    private func radarLayer(
+    /// Draws the tiles at full opacity into a transparent bitmap the size
+    /// of the snapshot.
+    private func tileBitmap(
         tiles: [(tile: TileCoordinate, image: NSImage)],
         zoom: Int,
         imageSize: NSSize,
         toImagePoint: (CLLocationCoordinate2D) -> NSPoint
-    ) -> NSImage? {
+    ) -> NSBitmapImageRep? {
         guard !tiles.isEmpty,
               let bitmap = NSBitmapImageRep(
                 bitmapDataPlanes: nil,
@@ -607,11 +614,85 @@ struct RadarMapRenderer {
         }
         context.flushGraphics()
         NSGraphicsContext.restoreGraphicsState()
+        return bitmap
+    }
+
+    /// The radar tiles as one layer, smoothing the ~1 km radar data cells
+    /// when they'd read as visible blocks.
+    private func radarLayer(
+        tiles: [(tile: TileCoordinate, image: NSImage)],
+        zoom: Int,
+        imageSize: NSSize,
+        toImagePoint: (CLLocationCoordinate2D) -> NSPoint
+    ) -> NSImage? {
+        guard let bitmap = tileBitmap(tiles: tiles, zoom: zoom, imageSize: imageSize, toImagePoint: toImagePoint)
+        else { return nil }
 
         // Size of one ~1 km radar data cell in image pixels; only smooth
         // when cells are large enough to look blocky.
         let pixelsPerKilometer = Double(imageSize.height) / (latitudeSpan * 111)
         let blurRadius = pixelsPerKilometer * 0.5
+        if blurRadius >= 1.5, let smoothed = Self.blurred(bitmap, radius: blurRadius) {
+            return smoothed
+        }
+        let image = NSImage(size: imageSize)
+        image.addRepresentation(bitmap)
+        return image
+    }
+
+    /// The satellite tiles reduced to just the clouds. GeoColor imagery
+    /// also shows the ground (true color by day, city lights at night), and
+    /// laying that over the map tints everything; clouds are the bright,
+    /// nearly colorless pixels, so those keep their color and everything
+    /// else fades out. At close zooms each satellite pixel covers many
+    /// image pixels, so the result is blurred to hide the blocks.
+    private func cloudLayer(
+        tiles: [(tile: TileCoordinate, image: NSImage)],
+        zoom: Int,
+        imageSize: NSSize,
+        toImagePoint: (CLLocationCoordinate2D) -> NSPoint
+    ) -> NSImage? {
+        guard let bitmap = tileBitmap(tiles: tiles, zoom: zoom, imageSize: imageSize, toImagePoint: toImagePoint),
+            let data = bitmap.bitmapData,
+            bitmap.samplesPerPixel == 4, bitmap.bitsPerSample == 8,
+            !bitmap.bitmapFormat.contains(.alphaFirst)
+        else { return nil }
+
+        func smoothstep(_ edge0: Double, _ edge1: Double, _ x: Double) -> Double {
+            let t = min(max((x - edge0) / (edge1 - edge0), 0), 1)
+            return t * t * (3 - 2 * t)
+        }
+        let premultiplied = !bitmap.bitmapFormat.contains(.alphaNonpremultiplied)
+        for row in 0..<bitmap.pixelsHigh {
+            let rowStart = row * bitmap.bytesPerRow
+            for column in 0..<bitmap.pixelsWide {
+                let offset = rowStart + column * 4
+                let alpha = Double(data[offset + 3]) / 255
+                guard alpha > 0 else { continue }
+                // Back to straight color to judge it.
+                let divisor = premultiplied ? alpha : 1
+                let red = Double(data[offset]) / 255 / divisor
+                let green = Double(data[offset + 1]) / 255 / divisor
+                let blue = Double(data[offset + 2]) / 255 / divisor
+                let brightest = max(red, green, blue)
+                let luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+                let saturation = brightest > 0 ? (brightest - min(red, green, blue)) / brightest : 0
+                let cloudiness = smoothstep(Self.cloudLuminanceRange.lowerBound,
+                                            Self.cloudLuminanceRange.upperBound, luminance)
+                    * (1 - smoothstep(0.12, 0.35, saturation))
+                let newAlpha = alpha * cloudiness * Self.cloudMaxAlpha
+                let scale = premultiplied ? newAlpha : 1
+                data[offset] = UInt8(min(red * scale, 1) * 255)
+                data[offset + 1] = UInt8(min(green * scale, 1) * 255)
+                data[offset + 2] = UInt8(min(blue * scale, 1) * 255)
+                data[offset + 3] = UInt8(newAlpha * 255)
+            }
+        }
+
+        // Image pixels per 256-pixel-tile satellite pixel at this zoom.
+        let degreesPerSourcePixel = 360 / (Double(1 << zoom) * 256)
+        let imagePixelsPerDegree = Double(imageSize.width) / region.span.longitudeDelta
+        let blurRadius = degreesPerSourcePixel * imagePixelsPerDegree * 0.5
         if blurRadius >= 1.5, let smoothed = Self.blurred(bitmap, radius: blurRadius) {
             return smoothed
         }
@@ -708,19 +789,12 @@ struct RadarMapRenderer {
         mapImage.draw(in: NSRect(origin: .zero, size: imageSize))
         let imageBounds = NSRect(origin: .zero, size: imageSize)
 
-        // Semi-transparent satellite imagery under the radar, so cloud cover
-        // shows on dry days without hiding the map.
-        for (tile, image) in clouds.tiles {
-            let northWest = toImagePoint(Self.tileNorthWestCorner(x: tile.x, y: tile.y, zoom: clouds.zoom))
-            let southEast = toImagePoint(Self.tileNorthWestCorner(x: tile.x + 1, y: tile.y + 1, zoom: clouds.zoom))
-            let rect = NSRect(
-                x: min(northWest.x, southEast.x),
-                y: min(northWest.y, southEast.y),
-                width: abs(southEast.x - northWest.x),
-                height: abs(southEast.y - northWest.y)
-            )
-            guard rect.intersects(imageBounds) else { continue }
-            image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 0.5)
+        // Clouds under the radar, so cloud cover shows on dry days without
+        // hiding the map. Their translucency is baked into the layer.
+        if let cloudLayer = cloudLayer(
+            tiles: clouds.tiles, zoom: clouds.zoom, imageSize: imageSize, toImagePoint: toImagePoint
+        ) {
+            cloudLayer.draw(in: imageBounds, from: .zero, operation: .sourceOver, fraction: 1)
         }
 
         // Composite the tiles into their own layer so close zooms can be

@@ -10,7 +10,8 @@ A macOS desktop widget that shows a live weather radar map for your location, wi
 - Live radar imagery over a map of your area, using the MRMS clutter-filtered US mosaic with a global fallback
 - Severe weather warning badges (tornado, severe thunderstorm, flash flood, marine, flood) color-coded by type
 - Tropical outlook: hurricane forecast cones on the map and estimated tropical-storm wind arrival times
-- Hourly rain chance sparkline for the next 6 hours, shown only when rain is plausible
+- Hourly rain chance for the next 6 hours, shown only when rain is plausible, with a summary like “Rain likely ~5 PM (60%)”
+- Satellite cloud cover with the ground filtered out, so only clouds tint the map
 - Daily rain chance and radar timestamp in the caption
 - Day/night map styling based on local solar time, with a snow tint when precipitation is frozen
 - Refresh button on the widget, and an orange marker when the radar may be out of date (a refresh failed or the radar is over 20 minutes old)
