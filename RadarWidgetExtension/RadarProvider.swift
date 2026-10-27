@@ -10,7 +10,7 @@ import MapKit
 import WidgetKit
 
 struct RadarEntry: TimelineEntry {
-    let date: Date
+    var date: Date
     let locationName: String
     let image: NSImage?
     let radarTime: Date?
@@ -22,7 +22,33 @@ struct RadarEntry: TimelineEntry {
     let warningExpires: Date?
     /// Whether the badged warning covers this location, not just the map.
     let warningCoversLocation: Bool
+    /// Whether this is the last successful render, shown because a fresh
+    /// one failed.
+    var isFromCache = false
     let errorMessage: String?
+
+    /// Radar older than this is flagged in the caption. RainViewer frames
+    /// are 10 minutes apart and land a few minutes late, so a tighter limit
+    /// would flag normal worldwide radar.
+    static let staleAfter: TimeInterval = 20 * 60
+
+    enum Freshness {
+        case current
+        /// The radar frame is older than `staleAfter`.
+        case old
+        /// A refresh failed and this is the previous render.
+        case notUpdated
+    }
+
+    var freshness: Freshness {
+        if isFromCache {
+            return .notUpdated
+        }
+        if let radarTime, date.timeIntervalSince(radarTime) >= Self.staleAfter {
+            return .old
+        }
+        return .current
+    }
 
     static func placeholder() -> RadarEntry {
         RadarEntry(
@@ -57,9 +83,20 @@ struct RadarProvider: AppIntentTimelineProvider {
 
     func timeline(for configuration: RadarConfigurationIntent, in context: Context) async -> Timeline<RadarEntry> {
         let entry = await makeEntry(for: configuration, in: context)
+        var entries = [entry]
+        // WidgetKit budgets reloads and may hold off the next one, leaving
+        // this radar on screen as it ages. A second entry flags it as old at
+        // the point it becomes so, without needing a reload.
+        if entry.freshness == .current, let radarTime = entry.radarTime {
+            var aged = entry
+            aged.date = radarTime.addingTimeInterval(RadarEntry.staleAfter)
+            if aged.date > entry.date {
+                entries.append(aged)
+            }
+        }
         // IEM regenerates the NEXRAD composite roughly every 5 minutes.
         let refreshDate = entry.date.addingTimeInterval(5 * 60)
-        return Timeline(entries: [entry], policy: .after(refreshDate))
+        return Timeline(entries: entries, policy: .after(refreshDate))
     }
 
     private func makeEntry(for configuration: RadarConfigurationIntent, in context: Context) async -> RadarEntry {
@@ -129,6 +166,7 @@ struct RadarProvider: AppIntentTimelineProvider {
                     warningCode: warningActive ? cached.metadata.warningCode : nil,
                     warningExpires: warningActive ? expires : nil,
                     warningCoversLocation: warningActive && cached.metadata.warningCoversLocation == true,
+                    isFromCache: true,
                     errorMessage: nil
                 )
             }

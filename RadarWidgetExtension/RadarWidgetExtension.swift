@@ -5,6 +5,7 @@
 //  Created by Curtis Netterville on 8/7/26.
 //
 
+import AppIntents
 import SwiftUI
 import WidgetKit
 
@@ -20,18 +21,30 @@ struct RadarWidget: Widget {
             RadarWidgetEntryView(entry: entry)
         }
         .configurationDisplayName("Weather Radar")
-        .description("Live NEXRAD precipitation radar for a US area you choose.")
-        .supportedFamilies([.systemLarge, .systemExtraLarge])
+        .description("Live precipitation radar for a location you choose.")
+        .supportedFamilies([.systemMedium, .systemLarge, .systemExtraLarge])
         .contentMarginsDisabled()
     }
 }
 
 struct RadarWidgetEntryView: View {
     var entry: RadarEntry
+    @Environment(\.widgetFamily) private var family
+
+    /// The medium widget is short, so it gets a pared-down caption.
+    private var isCompact: Bool { family == .systemMedium }
+    private var inset: CGFloat { isCompact ? 8 : 12 }
 
     var body: some View {
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .overlay(alignment: .topTrailing) {
+                // Nothing to refresh while the first render is still loading.
+                if entry.image != nil || entry.errorMessage != nil {
+                    refreshButton
+                        .padding(inset)
+                }
+            }
             .containerBackground(for: .widget) {
                 background
             }
@@ -43,6 +56,8 @@ struct RadarWidgetEntryView: View {
             VStack(alignment: .leading) {
                 if let warningTitle = entry.warningTitle {
                     warningBadge(warningTitle)
+                        // Keep clear of the refresh button.
+                        .padding(.trailing, 32)
                 }
                 Spacer()
                 HStack {
@@ -51,7 +66,7 @@ struct RadarWidgetEntryView: View {
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(12)
+            .padding(inset)
         } else if let message = entry.errorMessage {
             statusView(systemImage: "exclamationmark.triangle", title: "Radar Unavailable", message: message)
         } else {
@@ -74,37 +89,105 @@ struct RadarWidgetEntryView: View {
         }
     }
 
+    private var refreshButton: some View {
+        Button(intent: RefreshRadarIntent()) {
+            Image(systemName: "arrow.clockwise")
+                .font(.system(size: 11, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(width: 24, height: 24)
+                .background(.black.opacity(0.35), in: Circle())
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Refresh Radar")
+    }
+
     private var caption: some View {
         VStack(alignment: .leading, spacing: 2) {
             Text(entry.locationName)
-                .font(.headline)
-            if let rainChance = entry.rainChance {
-                Label("\(rainChance)% chance of rain for the rest of today", systemImage: "umbrella.fill")
-                    .font(.caption)
-                    .foregroundStyle(.white.opacity(0.9))
+                .font(isCompact ? .subheadline.bold() : .headline)
+            if isCompact {
+                compactDetail
+            } else {
+                if let rainChance = entry.rainChance {
+                    Label("\(rainChance)% chance of rain for the rest of today", systemImage: "umbrella.fill")
+                        .font(.caption)
+                        .foregroundStyle(.white.opacity(0.9))
+                }
+                if let arrival = entry.tropicalWindArrival {
+                    Label("Tropical storm winds ~\(arrival)", systemImage: "wind")
+                        .font(.caption.bold())
+                        .foregroundStyle(.orange)
+                }
+                // Only worth the space when rain is actually plausible soon.
+                if entry.hourlyRain.max() ?? 0 >= 10 {
+                    hourlyRainStrip
+                }
             }
-            if let arrival = entry.tropicalWindArrival {
-                Label("Tropical storm winds ~\(arrival)", systemImage: "wind")
-                    .font(.caption.bold())
-                    .foregroundStyle(.orange)
-            }
-            // Only worth the space when rain is actually plausible soon.
-            if entry.hourlyRain.max() ?? 0 >= 10 {
-                hourlyRainStrip
-            }
+            radarTimeLine
+                // Dims while a refresh is in flight.
+                .invalidatableContent()
+        }
+        .foregroundStyle(.white)
+        .shadow(color: .black.opacity(0.6), radius: 1)
+        .padding(.horizontal, isCompact ? 8 : 10)
+        .padding(.vertical, isCompact ? 4 : 6)
+        // A light translucent tint rather than a material: widget snapshots
+        // render materials as nearly opaque, hiding radar under the caption.
+        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: isCompact ? 8 : 10))
+    }
+
+    /// The medium widget's single detail line: an inbound tropical storm
+    /// beats the rain chance, which is the most useful line otherwise.
+    @ViewBuilder
+    private var compactDetail: some View {
+        if let arrival = entry.tropicalWindArrival {
+            Label("TS winds ~\(arrival)", systemImage: "wind")
+                .font(.caption2.bold())
+                .foregroundStyle(.orange)
+        } else if let rainChance = entry.rainChance {
+            Label("\(rainChance)% rain rest of today", systemImage: "umbrella.fill")
+                .font(.caption2)
+                .foregroundStyle(.white.opacity(0.9))
+        }
+    }
+
+    /// When the radar is from, turning orange once it can't be trusted to
+    /// be current: either the last refresh failed, or the radar has aged.
+    @ViewBuilder
+    private var radarTimeLine: some View {
+        switch entry.freshness {
+        case .current:
             if let radarTime = entry.radarTime {
                 Text("Radar as of \(radarTime, style: .time)")
                     .font(.caption2)
                     .foregroundStyle(.white.opacity(0.75))
             }
+        case .old, .notUpdated:
+            Label {
+                staleText
+            } icon: {
+                Image(systemName: "clock.badge.exclamationmark")
+            }
+            .font(.caption2.bold())
+            .foregroundStyle(.orange)
         }
-        .foregroundStyle(.white)
-        .shadow(color: .black.opacity(0.6), radius: 1)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 6)
-        // A light translucent tint rather than a material: widget snapshots
-        // render materials as nearly opaque, hiding radar under the caption.
-        .background(.black.opacity(0.3), in: RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var staleText: Text {
+        let failed = entry.freshness == .notUpdated
+        guard let radarTime = entry.radarTime else {
+            return Text("Couldn’t update radar")
+        }
+        switch (failed, isCompact) {
+        case (true, true):
+            return Text("Not updated · \(radarTime, style: .time)")
+        case (true, false):
+            return Text("Couldn’t update · radar from \(radarTime, style: .time)")
+        case (false, true):
+            return Text("Out of date · \(radarTime, style: .time)")
+        case (false, false):
+            return Text("Radar from \(radarTime, style: .time) may be out of date")
+        }
     }
 
     /// A tiny bar chart of the next few hours' precipitation chance, so you can
@@ -132,18 +215,25 @@ struct RadarWidgetEntryView: View {
     private func warningBadge(_ title: String) -> some View {
         HStack(spacing: 6) {
             Image(systemName: "exclamationmark.triangle.fill")
-                .font(.callout.bold())
-            VStack(alignment: .leading, spacing: 0) {
+                .font(isCompact ? .caption.bold() : .callout.bold())
+            if isCompact {
+                // No room for the detail line; the ring still marks "here".
                 Text(title)
                     .font(.caption.bold())
-                Text(warningDetail)
-                    .font(.caption2.weight(.medium))
-                    .opacity(0.85)
+                    .lineLimit(1)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(title)
+                        .font(.caption.bold())
+                    Text(warningDetail)
+                        .font(.caption2.weight(.medium))
+                        .opacity(0.85)
+                }
             }
         }
         .foregroundStyle(badgeTextColor)
-        .padding(.horizontal, 10)
-        .padding(.vertical, 5)
+        .padding(.horizontal, isCompact ? 8 : 10)
+        .padding(.vertical, isCompact ? 4 : 5)
         .background(badgeColor, in: RoundedRectangle(cornerRadius: 10))
         // A warning covering the location itself gets a white ring so it
         // reads as more urgent than one elsewhere on the map.

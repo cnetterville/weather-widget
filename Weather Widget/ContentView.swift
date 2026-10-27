@@ -30,7 +30,7 @@ struct ContentView: View {
 
             VStack(alignment: .leading, spacing: 10) {
                 instructionRow(number: 1, text: "Right-click the desktop and choose “Edit Widgets…”")
-                instructionRow(number: 2, text: "Find “Weather Radar” and add the Large or Extra Large widget.")
+                instructionRow(number: 2, text: "Find “Weather Radar” and add the Medium, Large, or Extra Large widget.")
                 instructionRow(number: 3, text: "Right-click the widget and choose “Edit Weather Radar” to pick your location and zoom level.")
                 instructionRow(number: 4, text: "To follow your current location instead, allow location access when this app asks, then turn on “Use My Current Location” in the widget’s settings.")
             }

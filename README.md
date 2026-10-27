@@ -13,6 +13,8 @@ A macOS desktop widget that shows a live weather radar map for your location, wi
 - Hourly rain chance sparkline for the next 6 hours, shown only when rain is plausible
 - Daily rain chance and radar timestamp in the caption
 - Day/night map styling based on local solar time, with a snow tint when precipitation is frozen
+- Refresh button on the widget, and an orange marker when the radar may be out of date (a refresh failed or the radar is over 20 minutes old)
+- Medium, Large, and Extra Large sizes
 
 ## Installation
 
